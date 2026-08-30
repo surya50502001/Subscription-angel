@@ -38,7 +38,7 @@ export const PREDEFINED_IDEAS: PredefinedIdea[] = [
   }
 ];
 
-export const INITIAL_SUBSCRIPTIONS: SubscriptionItem[] = [
+export const INITIAL_SUBSCRIPTIONS: any[] = [
   {
     id: "sub-1",
     name: "Netflix Premium",

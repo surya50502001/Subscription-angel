@@ -1,71 +1,44 @@
-import React, { useState, useMemo, useEffect } from "react";
-import { SubscriptionItem } from "../types";
-import { INITIAL_SUBSCRIPTIONS } from "../data";
-import { motion, AnimatePresence } from "motion/react";
+import React, { useEffect, useState, useMemo } from "react";
 import { 
   ShieldCheck, 
+  RefreshCw, 
   AlertTriangle, 
+  Sparkles, 
+  Crown, 
+  ArrowRight, 
+  UploadCloud, 
+  Plus, 
   Trash2, 
+  Layers, 
+  Copy, 
+  CheckCircle, 
+  Check, 
   FileText, 
-  Calculator, 
-  CheckCircle,
-  Copy,
-  ChevronRight,
-  TrendingDown,
-  Sparkles,
-  RefreshCw,
-  Coins,
-  UploadCloud,
-  Plus,
-  ArrowRight,
-  UserCheck,
-  CreditCard,
-  Info,
-  Calendar,
-  Layers,
-  ChevronDown,
-  HelpCircle,
-  Clock,
-  Check,
-  Crown
+  Coins, 
+  LogOut, 
+  Loader2 
 } from "lucide-react";
+import { useAuth } from "../context/AuthContext.tsx";
+import { SubscriptionItem } from "../types.ts";
+import { motion, AnimatePresence } from "motion/react";
 
-interface SubscriptionSimulatorProps {
-  isPremium?: boolean;
-  handleUpgrade?: () => void;
-  stripeLoading?: boolean;
-}
+export const SubscriptionSimulator: React.FC = () => {
+  const { user, token, loginWithGoogle, logout } = useAuth();
+  const [subs, setSubs] = useState<SubscriptionItem[]>([]);
+  const [isPremium, setIsPremium] = useState(false);
+  const [premiumStatus, setPremiumStatus] = useState("none");
+  const [stripeLoading, setStripeLoading] = useState(false);
+  const [loadingSubs, setLoadingSubs] = useState(false);
 
-export default function SubscriptionSimulator({ 
-  isPremium = false, 
-  handleUpgrade, 
-  stripeLoading = false 
-}: SubscriptionSimulatorProps) {
-  // Real Local Storage persistence - replace all static mock resets
-  const [subs, setSubs] = useState<SubscriptionItem[]>(() => {
-    const saved = localStorage.getItem("subguardian_subscriptions");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse saved subscriptions:", e);
-      }
-    }
-    return INITIAL_SUBSCRIPTIONS;
-  });
-
-  // Sync state to local database whenever changes occur
-  useEffect(() => {
-    localStorage.setItem("subguardian_subscriptions", JSON.stringify(subs));
-  }, [subs]);
-
+  // Active script generator details
   const [activeScript, setActiveScript] = useState<{
     title: string;
     text: string;
     provider: string;
     type: "cancel" | "negotiate";
+    subId?: number;
   } | null>(null);
-  
+
   // Statement parser states
   const [statementInput, setStatementInput] = useState("");
   const [isParsing, setIsParsing] = useState(false);
@@ -75,17 +48,17 @@ export default function SubscriptionSimulator({
   const [showAdder, setShowAdder] = useState(false);
   const [newName, setNewName] = useState("");
   const [newPrice, setNewPrice] = useState("");
-  const [newCategory, setNewCategory] = useState<"entertainment" | "utility" | "fitness" | "productivity" | "other">("entertainment");
-  const [newFreq, setNewFreq] = useState<"monthly" | "annually">("monthly");
-  const [newUsage, setNewUsage] = useState("Last used 3 days ago");
+  const [newCategory, setNewCategory] = useState<string>("entertainment");
+  const [newFreq, setNewFreq] = useState<string>("monthly");
+  const [newCurrency, setNewCurrency] = useState<string>("USD");
+  const [newUsage, setNewUsage] = useState("Idle");
   const [isFlagged, setIsFlagged] = useState(true);
 
-  // Interaction loading indicators
-  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
-
+  // Loading indicator for operations
+  const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Sample transaction statement templates for users to try with one-tap
+  // Sample transaction statement templates for safe onboarding
   const STATEMENT_TEMPLATES = [
     {
       title: "Jane's Credit Card Statement",
@@ -93,7 +66,6 @@ export default function SubscriptionSimulator({
 POS DEBIT EQUINOX SPORTS CLUB YORK - $250.00 (08/10)
 DIRECT DEBIT COMCAST BROADBAND XFINITY BILL - $89.99 (08/02)
 ACH WITHDRAWAL SPOTIFY FAMILY TRIAL PREMIUM - $16.99 (08/21)
-POS WITHDRAWAL CHOREQUEST SAVINGS CHORE LEDGER - $4.99 (08/18)
 POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
     },
     {
@@ -106,124 +78,175 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
     }
   ];
 
-  // App metrics
-  const stats = useMemo(() => {
-    let totalMonthly = 0;
-    let potentialLeaks = 0;
-    let verifiedSavings = 0;
-
-    subs.forEach((s) => {
-      const price = s.frequency === "annually" ? s.price / 12 : s.price;
-      
-      if (s.status === "active") {
-        totalMonthly += price;
-      } else if (s.status === "flagged") {
-        totalMonthly += price;
-        potentialLeaks += price;
-      } else if (s.status === "cancelled" || s.status === "cancelling") {
-        verifiedSavings += price;
-      } else if (s.status === "negotiated" || s.status === "negotiating") {
-        const afterNegotiation = price - (s.potentialSavings || 0);
-        totalMonthly += afterNegotiation;
-        verifiedSavings += s.potentialSavings || 0;
-      }
-    });
-
-    return {
-      totalMonthly: parseFloat(totalMonthly.toFixed(2)),
-      potentialLeaks: parseFloat(potentialLeaks.toFixed(2)),
-      verifiedSavings: parseFloat(verifiedSavings.toFixed(2)),
-      activeCount: subs.filter(s => s.status !== "cancelled").length,
-      leakCount: subs.filter(s => s.status === "flagged").length
-    };
-  }, [subs]);
-
-  // Handle live server-side cancellation generation via Gemini API
-  const handleCancel = async (id: string, name: string, price: number, frequency: string) => {
-    setActionLoadingId(id);
-    
-    // Set status to cancelling
-    setSubs(prev => prev.map(s => s.id === id ? { ...s, status: "cancelling" } : s));
-
+  // Fetch subscriptions & premium status
+  const fetchSubscriptions = async () => {
+    if (!token) return;
+    setLoadingSubs(true);
     try {
-      const response = await fetch("/api/subguardian/generate-cancellation", {
+      // 1. Fetch user subscription premium status
+      const premiumRes = await fetch("/api/me/subscription", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (premiumRes.ok) {
+        const premiumData = await premiumRes.json();
+        setIsPremium(premiumData.premium);
+        setPremiumStatus(premiumData.status);
+      }
+
+      // 2. Fetch subscription items from SQL
+      const subsRes = await fetch("/api/subscriptions", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (subsRes.ok) {
+        const subsData = await subsRes.json();
+        setSubs(subsData.subscriptions || []);
+      }
+    } catch (err) {
+      console.error("Failed to sync subscriptions ledger from backend:", err);
+    } finally {
+      setLoadingSubs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user && token) {
+      fetchSubscriptions();
+    } else {
+      setSubs([]);
+      setIsPremium(false);
+    }
+  }, [user, token]);
+
+  // Handle Stripe upgrade checkout redirect
+  const handleUpgrade = async () => {
+    if (!token) return;
+    setStripeLoading(true);
+    try {
+      const response = await fetch("/api/stripe/create-checkout-session", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+
+      if (data.url) {
+        window.location.href = data.url; // Redirect to Stripe Checkout
+      }
+    } catch (err: any) {
+      console.error("Stripe Checkout failed:", err);
+      alert(err.message || "Failed to launch payment checkout.");
+    } finally {
+      setStripeLoading(false);
+    }
+  };
+
+  // Step 1: Request formal subscription cancellation
+  const handleCancelRequest = async (sub: SubscriptionItem) => {
+    if (!token) return;
+    setActionLoadingId(sub.id);
+    try {
+      const response = await fetch(`/api/subscriptions/${sub.id}/request-cancel`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
         body: JSON.stringify({
-          name,
-          price,
-          frequency,
-          reason: `I am auditing my accounts and realized I have not utilized my ${name} premium access. Please cancel immediately and issue a refund.`,
+          reason: `Unused account underutilization audit.`
         })
       });
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
 
-      // Transition simulated status to cancelled
-      setSubs(prev => prev.map(s => s.id === id ? { ...s, status: "cancelled", potentialSavings: s.price } : s));
-      
+      // Re-sync with backend to capture updated statuses & records
+      await fetchSubscriptions();
+
+      // Show the generated cancellation letter instructions on screen
       setActiveScript({
-        provider: name,
-        title: data.title || `Refund & Cancellation Letter for ${name}`,
-        text: data.text,
-        type: "cancel"
+        provider: sub.provider,
+        title: `Cancellation Request Draft for ${sub.provider}`,
+        text: data.generatedMessage,
+        type: "cancel",
+        subId: sub.id
       });
     } catch (err: any) {
-      console.error(err);
-      // Fallback if call fails
-      setSubs(prev => prev.map(s => s.id === id ? { ...s, status: "cancelled" } : s));
+      console.error("Cancellation request generation failed:", err);
+      alert(err.message || "Failed to initiate cancellation request.");
     } finally {
       setActionLoadingId(null);
     }
   };
 
-  // Handle live server-side rate negotiation script generation via Gemini API
-  const handleNegotiate = async (id: string, name: string, price: number, potentialSave: number) => {
-    setActionLoadingId(id);
-    setSubs(prev => prev.map(s => s.id === id ? { ...s, status: "negotiating" } : s));
+  // Step 2: Manually confirm & verify actual cancellation (charge removed)
+  const handleVerifyCancellation = async (subId: number) => {
+    if (!token) return;
+    setActionLoadingId(subId);
+    try {
+      const response = await fetch(`/api/subscriptions/${subId}/verify-cancel`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
 
+      // Clear active letter view and fetch updated state
+      setActiveScript(null);
+      await fetchSubscriptions();
+    } catch (err: any) {
+      console.error("Verification confirmation failed:", err);
+      alert(err.message || "Failed to verify cancellation.");
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  // Generate loyalty negotiation promos script
+  const handleNegotiate = async (sub: SubscriptionItem) => {
+    if (!token) return;
+    setActionLoadingId(sub.id);
     try {
       const response = await fetch("/api/subguardian/generate-negotiation", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
         body: JSON.stringify({
-          provider: name,
-          currentPrice: price,
-          competitorPrice: Math.max(19.99, parseFloat((price * 0.6).toFixed(2))),
-          userName: "Alexander Wright"
+          provider: sub.provider,
+          currentPrice: sub.amount,
+          competitorPrice: Math.max(19.99, parseFloat((sub.amount * 0.6).toFixed(2)))
         })
       });
 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
 
-      // Transition simulated status to negotiated
-      setSubs(prev => prev.map(s => s.id === id ? { 
-        ...s, 
-        status: "negotiated",
-        price: s.price - potentialSave,
-        originalPrice: s.price
-      } : s));
-
       setActiveScript({
-        provider: name,
-        title: data.title || `${name} Promo Script`,
+        provider: sub.provider,
+        title: data.title || `${sub.provider} Promo Negotiation Outline`,
         text: data.text,
-        type: "negotiate"
+        type: "negotiate",
+        subId: sub.id
       });
     } catch (err: any) {
-      console.error(err);
-      setSubs(prev => prev.map(s => s.id === id ? { ...s, status: "flagged" } : s));
+      console.error("Negotiation failed:", err);
+      alert(err.message || "Failed to generate promo negotiation blueprint.");
     } finally {
       setActionLoadingId(null);
     }
   };
 
-  // Handle pasting and parsing via Gemini Statement Analyzer
+  // Parse uploaded statement text securely
   const handleParseStatement = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!statementInput.trim()) return;
+    if (!statementInput.trim() || !token) return;
 
     setIsParsing(true);
     setParseError(null);
@@ -231,51 +254,62 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
     try {
       const response = await fetch("/api/subguardian/parse-statement", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
         body: JSON.stringify({ statementText: statementInput })
       });
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Failed to analyze bank transactions.");
+      if (!response.ok) throw new Error(data.error || "Failed to analyze statements.");
 
-      if (data.subscriptions && data.subscriptions.length > 0) {
-        // Prepend new parsed subscriptions to list
-        setSubs(prev => [...data.subscriptions, ...prev]);
-        setStatementInput("");
-      } else {
-        setParseError("The analyzer completed but did not detect any recurring subscription logs. Try pasting a structured list.");
-      }
+      setStatementInput("");
+      await fetchSubscriptions(); // Re-fetch updated items
     } catch (err: any) {
       console.error(err);
-      setParseError(err.message || "An error occurred. Check your API configuration.");
+      setParseError(err.message || "Failed to complete AI scan.");
     } finally {
       setIsParsing(false);
     }
   };
 
-  const handleManualAdd = (e: React.FormEvent) => {
+  // Manually add subscription details
+  const handleManualAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newName.trim() || !newPrice.trim()) return;
+    if (!newName.trim() || !newPrice.trim() || !token) return;
 
     const priceNum = parseFloat(newPrice);
     if (isNaN(priceNum)) return;
 
-    const newSub: SubscriptionItem = {
-      id: `manual-${Date.now()}`,
-      name: newName,
-      category: newCategory,
-      price: priceNum,
-      frequency: newFreq,
-      lastUsed: newUsage,
-      potentialSavings: isFlagged ? priceNum : 0,
-      status: isFlagged ? "flagged" : "active",
-      logoUrl: newName[0].toUpperCase()
-    };
+    try {
+      const response = await fetch("/api/subscriptions", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          provider: newName,
+          name: newName,
+          category: newCategory,
+          amount: priceNum,
+          currency: newCurrency,
+          frequency: newFreq,
+          status: isFlagged ? "flagged" : "active"
+        })
+      });
 
-    setSubs(prev => [newSub, ...prev]);
-    setNewName("");
-    setNewPrice("");
-    setShowAdder(false);
+      if (!response.ok) throw new Error("Failed to insert plan.");
+
+      setNewName("");
+      setNewPrice("");
+      setShowAdder(false);
+      await fetchSubscriptions();
+    } catch (err: any) {
+      console.error("Manual add failed:", err);
+      alert(err.message || "Failed to add subscription.");
+    }
   };
 
   const handleCopy = () => {
@@ -286,13 +320,45 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
     }
   };
 
-  const resetSimulation = () => {
-    setSubs(INITIAL_SUBSCRIPTIONS);
-    setActiveScript(null);
-    setParseError(null);
+  // Format currency output precisely (no hardcoded "$" assumptions)
+  const formatCurrency = (amount: number, currencyCode: string) => {
+    const symbol = currencyCode === "INR" ? "₹" : "$";
+    return `${symbol}${amount.toFixed(2)}`;
   };
 
-  // Category expense breakdown metrics
+  // Dynamic user financial metrics calculating Potential Leaks vs. Confirmed Savings
+  const stats = useMemo(() => {
+    let totalMonthly = 0;
+    let potentialLeaks = 0;
+    let confirmedSavings = 0;
+
+    subs.forEach((s) => {
+      // Normalize to monthly equivalent
+      const normalizedAmount = s.frequency === "annually" ? s.amount / 12 : s.amount;
+      
+      if (s.status === "active" || s.status === "flagged" || s.status === "cancellation_requested") {
+        totalMonthly += normalizedAmount;
+      }
+
+      if (s.status === "flagged") {
+        potentialLeaks += normalizedAmount;
+      }
+
+      if (s.status === "verified_cancelled") {
+        confirmedSavings += normalizedAmount;
+      }
+    });
+
+    return {
+      totalMonthly,
+      potentialLeaks,
+      confirmedSavings,
+      activeCount: subs.filter(s => s.status !== "verified_cancelled").length,
+      leakCount: subs.filter(s => s.status === "flagged").length
+    };
+  }, [subs]);
+
+  // Expenses categories breakdown math
   const categoryBreakdown = useMemo(() => {
     const categories: Record<string, number> = {
       entertainment: 0,
@@ -303,19 +369,47 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
     };
 
     subs.forEach(s => {
-      if (s.status !== "cancelled") {
-        const val = s.frequency === "annually" ? s.price / 12 : s.price;
-        categories[s.category] = (categories[s.category] || 0) + val;
+      if (s.status !== "verified_cancelled") {
+        const normalizedAmount = s.frequency === "annually" ? s.amount / 12 : s.amount;
+        const catName = s.category.toLowerCase();
+        if (categories[catName] !== undefined) {
+          categories[catName] += normalizedAmount;
+        } else {
+          categories.other += normalizedAmount;
+        }
       }
     });
 
     return Object.entries(categories).map(([name, value]) => ({
       name,
-      value: parseFloat(value.toFixed(2))
+      value
     }));
   }, [subs]);
 
-  const maxCategoryValue = Math.max(...categoryBreakdown.map(c => c.value), 1);
+  // Login Gate UI if user is not authenticated
+  if (!user) {
+    return (
+      <div id="auth-gate-root" className="max-w-md mx-auto my-12 bg-white border border-slate-200/90 rounded-2xl p-8 shadow-sm text-center space-y-6">
+        <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center mx-auto text-amber-500">
+          <ShieldCheck className="w-10 h-10" />
+        </div>
+        <div>
+          <h2 className="text-xl font-bold text-slate-950">Access Subscription Guardian</h2>
+          <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+            Connect securely with Google Sign-In to launch durable transaction audits, track real premium cancellations, and negotiate utility rates.
+          </p>
+        </div>
+
+        <button
+          onClick={loginWithGoogle}
+          className="w-full bg-slate-950 hover:bg-slate-900 text-white font-bold text-sm py-3 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
+        >
+          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/shinydemos/google_button.svg" className="w-4 h-4" alt="Google" />
+          Continue with Google Account
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div id="subscription-simulator-root" className="space-y-8">
@@ -330,35 +424,36 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
               <ShieldCheck className="w-3.5 h-3.5" /> SubGuardian Active Core
             </div>
             <h3 className="text-xl font-bold text-white leading-tight">Digital Statement Guardian</h3>
+            <p className="text-[10px] text-slate-400 mt-1">Logged in as {user.email}</p>
           </div>
           <button 
-            onClick={resetSimulation}
-            className="text-xs text-amber-400 hover:text-amber-300 font-medium mt-4 text-left flex items-center gap-1.5 cursor-pointer"
+            onClick={logout}
+            className="text-xs text-slate-400 hover:text-rose-400 font-medium mt-4 text-left flex items-center gap-1.5 cursor-pointer transition-colors"
           >
-            <RefreshCw className="w-3 h-3" /> Reset Ledger to Default
+            <LogOut className="w-3 h-3" /> Log Out Account
           </button>
         </div>
 
         <div className="border-t md:border-t-0 md:border-l border-slate-800 pt-4 md:pt-0 md:pl-6">
           <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Active Monthly Bill</div>
-          <div className="text-2xl font-black text-white mt-1">${stats.totalMonthly.toFixed(2)}</div>
+          <div className="text-2xl font-black text-white mt-1">{formatCurrency(stats.totalMonthly, "USD")}</div>
           <div className="text-[10px] text-slate-500 mt-1">{stats.activeCount} recurring plans active</div>
         </div>
 
         <div className="border-t md:border-t-0 md:border-l border-slate-800 pt-4 md:pt-0 md:pl-6">
           <div className="text-xs text-rose-400 font-semibold uppercase tracking-wider flex items-center gap-1">
-            <AlertTriangle className="w-3.5 h-3.5 text-rose-400 animate-bounce" /> Idle Leak Risks
+            <AlertTriangle className="w-3.5 h-3.5 text-rose-400 animate-pulse" /> Idle Leak Risks
           </div>
-          <div className="text-2xl font-black text-rose-400 mt-1">${stats.potentialLeaks.toFixed(2)}</div>
-          <div className="text-[10px] text-rose-500/80 mt-1">{stats.leakCount} flag alerts detected</div>
+          <div className="text-2xl font-black text-rose-400 mt-1">{formatCurrency(stats.potentialLeaks, "USD")}</div>
+          <div className="text-[10px] text-rose-500/80 mt-1">{stats.leakCount} leaks active</div>
         </div>
 
         <div className="border-t md:border-t-0 md:border-l border-slate-800 pt-4 md:pt-0 md:pl-6">
           <div className="text-xs text-emerald-400 font-semibold uppercase tracking-wider flex items-center gap-1">
-            <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Instant Verified Savings
+            <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Confirmed Savings
           </div>
-          <div className="text-3xl font-black text-emerald-400 mt-1">${stats.verifiedSavings.toFixed(2)}</div>
-          <div className="text-[10px] text-emerald-500 mt-1">Cash kept in your account</div>
+          <div className="text-3xl font-black text-emerald-400 mt-1">{formatCurrency(stats.confirmedSavings, "USD")}</div>
+          <div className="text-[10px] text-emerald-500 mt-1">Verified charge cancellations</div>
         </div>
       </div>
 
@@ -370,9 +465,9 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
               <Crown className="w-5 h-5 fill-slate-950" />
             </div>
             <div>
-              <h4 className="text-sm font-bold text-slate-950">Activate Continuous Autopilot Protection</h4>
+              <h4 className="text-sm font-bold text-slate-950">Activate Premium Autopilot Protection</h4>
               <p className="text-xs text-slate-600 mt-0.5 max-w-xl leading-relaxed">
-                Unlock real bank feed sync, automatic multi-channel trial cancellations, and 24/7 contract rate negotiation for just $4.99/mo. Cancel anytime.
+                Unlock real Cloud PostgreSQL database synchronization, unlimited automated cancellation requested logs, and rate negotiation script outcomes for $4.99/mo.
               </p>
             </div>
           </div>
@@ -381,7 +476,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
             disabled={stripeLoading}
             className="w-full sm:w-auto bg-slate-950 hover:bg-slate-900 text-white disabled:opacity-50 font-bold text-xs px-5 py-2.5 rounded-lg shrink-0 cursor-pointer shadow-sm flex items-center justify-center gap-1.5 transition-all"
           >
-            {stripeLoading ? "Loading Stripe..." : "Upgrade with Stripe"} <ArrowRight className="w-3.5 h-3.5" />
+            {stripeLoading ? "Processing..." : "Upgrade with Stripe"} <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
@@ -389,7 +484,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
       {/* Main grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         
-        {/* Left Side: Statement Parser & Subscriptions Ledger - 7 Columns */}
+        {/* Left Side: Statement Parser & Subscriptions Ledger */}
         <div className="lg:col-span-7 space-y-6">
           
           {/* Statement Parser Section */}
@@ -397,7 +492,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <UploadCloud className="w-4 h-4 text-slate-500" />
-                <h4 className="text-sm font-bold text-slate-900">Direct Bill & Statement Parser</h4>
+                <h4 className="text-sm font-bold text-slate-900">Upload transaction ledger & parse</h4>
               </div>
               <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-semibold">Gemini LLM Integration</span>
             </div>
@@ -459,7 +554,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
           <div className="flex items-center justify-between pt-2">
             <div className="flex items-center gap-2">
               <Coins className="w-4 h-4 text-slate-500" />
-              <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Detected Subscriptions</h4>
+              <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Detected Subscriptions Ledger</h4>
             </div>
             <button
               onClick={() => setShowAdder(!showAdder)}
@@ -469,7 +564,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
             </button>
           </div>
 
-          {/* Adder Form Modal/Dropdown */}
+          {/* Adder Form Modal */}
           <AnimatePresence>
             {showAdder && (
               <motion.form 
@@ -482,19 +577,19 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                 <h5 className="text-xs font-bold text-slate-900 uppercase">New Subscription Detail</h5>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-1">
-                    <label className="text-[10px] text-slate-400 font-bold uppercase">Name</label>
+                    <label className="text-[10px] text-slate-400 font-bold uppercase">Name / Provider</label>
                     <input 
                       type="text" 
-                      placeholder="E.g., Prime Video" 
+                      placeholder="E.g., Netflix" 
                       value={newName} 
                       onChange={(e) => setNewName(e.target.value)}
                       className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs focus:ring-1 focus:ring-amber-500/55"
                       required
                     />
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400 font-bold uppercase">Price (USD)</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="space-y-1 col-span-2">
+                      <label className="text-[10px] text-slate-400 font-bold uppercase">Price</label>
                       <input 
                         type="number" 
                         step="0.01"
@@ -506,14 +601,14 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] text-slate-400 font-bold uppercase">Frequency</label>
-                      <select 
-                        value={newFreq} 
-                        onChange={(e: any) => setNewFreq(e.target.value)}
+                      <label className="text-[10px] text-slate-400 font-bold uppercase">Currency</label>
+                      <select
+                        value={newCurrency}
+                        onChange={(e) => setNewCurrency(e.target.value)}
                         className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs"
                       >
-                        <option value="monthly">Monthly</option>
-                        <option value="annually">Annually</option>
+                        <option value="USD">USD ($)</option>
+                        <option value="INR">INR (₹)</option>
                       </select>
                     </div>
                   </div>
@@ -535,14 +630,15 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                     </select>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[10px] text-slate-400 font-bold uppercase">Usage Info</label>
-                    <input 
-                      type="text" 
-                      placeholder="E.g., Over 60 days idle" 
-                      value={newUsage} 
-                      onChange={(e) => setNewUsage(e.target.value)}
+                    <label className="text-[10px] text-slate-400 font-bold uppercase">Frequency</label>
+                    <select 
+                      value={newFreq} 
+                      onChange={(e: any) => setNewFreq(e.target.value)}
                       className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs"
-                    />
+                    >
+                      <option value="monthly">Monthly</option>
+                      <option value="annually">Annually</option>
+                    </select>
                   </div>
                 </div>
 
@@ -554,7 +650,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                       onChange={(e) => setIsFlagged(e.target.checked)}
                       className="rounded accent-amber-500"
                     />
-                    <span>Flag as inactive (leak risk)</span>
+                    <span>Flag as active leak risk (idle)</span>
                   </label>
                   <div className="flex gap-2">
                     <button 
@@ -578,13 +674,23 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
 
           {/* Subscriptions List */}
           <div className="space-y-3">
+            {loadingSubs && (
+              <div className="text-center py-6 text-slate-400 text-xs flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-amber-500" /> Loading secure ledger...
+              </div>
+            )}
+
+            {!loadingSubs && subs.length === 0 && (
+              <div className="text-center py-12 border border-dashed border-slate-300 rounded-xl bg-slate-50 text-slate-400 text-xs">
+                No subscription items identified yet. Paste a transaction statement or manual entry above to begin auditing.
+              </div>
+            )}
+
             <AnimatePresence initial={false}>
               {subs.map((sub) => {
                 const isFlagged = sub.status === "flagged";
-                const isCancelled = sub.status === "cancelled";
-                const isCancelling = sub.status === "cancelling";
-                const isNegotiated = sub.status === "negotiated";
-                const isNegotiating = sub.status === "negotiating";
+                const isCancelled = sub.status === "verified_cancelled" || sub.status === "cancelled";
+                const isRequested = sub.status === "cancellation_requested";
                 const isLoading = actionLoadingId === sub.id;
 
                 return (
@@ -600,43 +706,34 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                     }`}
                   >
                     <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm ${
+                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm shrink-0 ${
                         isCancelled ? "bg-slate-200 text-slate-500" :
                         isFlagged ? "bg-rose-50 text-rose-700 border border-rose-100" : "bg-slate-100 text-slate-800"
                       }`}>
-                        {sub.logoUrl || sub.name[0]}
+                        {sub.provider[0].toUpperCase()}
                       </div>
                       <div>
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="font-semibold text-slate-950 text-sm">{sub.name}</span>
                           {isFlagged && (
                             <span className="bg-rose-50 border border-rose-200/50 text-rose-800 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 leading-none">
-                              <AlertTriangle className="w-2.5 h-2.5" /> Idle Leak
+                              <AlertTriangle className="w-2.5 h-2.5" /> Idle Leak Risk
                             </span>
                           )}
                           {isCancelled && (
-                            <span className="bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-bold px-2 py-0.5 rounded-full leading-none">
-                              Cancelled
-                            </span>
-                          )}
-                          {isCancelling && (
-                            <span className="bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse leading-none flex items-center gap-1">
-                              <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Auto-Cancelling...
-                            </span>
-                          )}
-                          {isNegotiated && (
                             <span className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full leading-none">
-                              Saved $30.00/mo!
+                              Fully Cancelled
                             </span>
                           )}
-                          {isNegotiating && (
+                          {isRequested && (
                             <span className="bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse leading-none flex items-center gap-1">
-                              <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Lowering Rate...
+                              <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Cancellation Sent
                             </span>
                           )}
                         </div>
                         <p className="text-[11px] text-slate-400 font-medium mt-0.5">
-                          Category: <span className="capitalize text-slate-500 font-semibold">{sub.category}</span> • Usage: <span className="text-slate-600 font-bold">{sub.lastUsed}</span>
+                          Category: <span className="capitalize text-slate-500 font-semibold">{sub.category}</span>
+                          {sub.lastTransactionDate && ` • Last Transaction: ${sub.lastTransactionDate}`}
                         </p>
                       </div>
                     </div>
@@ -644,11 +741,8 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                     <div className="flex items-center justify-between md:justify-end gap-4 border-t md:border-t-0 pt-3 md:pt-0">
                       <div className="text-right">
                         <div className="flex items-center gap-1.5 md:justify-end">
-                          {sub.originalPrice && (
-                            <span className="text-xs text-slate-400 line-through">${sub.originalPrice}</span>
-                          )}
                           <span className="font-bold text-slate-900 text-sm">
-                            ${sub.price}
+                            {formatCurrency(sub.amount, sub.currency)}
                           </span>
                           <span className="text-[10px] text-slate-400 font-medium lowercase">
                             /{sub.frequency === "monthly" ? "mo" : "yr"}
@@ -656,13 +750,13 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                         </div>
                       </div>
 
-                      <div className="flex gap-1.5">
+                      <div className="flex gap-1.5 shrink-0">
                         {isFlagged && (
                           <>
                             {sub.category === "utility" ? (
                               <button
                                 type="button"
-                                onClick={() => handleNegotiate(sub.id, sub.name, sub.price, sub.potentialSavings)}
+                                onClick={() => handleNegotiate(sub)}
                                 disabled={isLoading}
                                 className="bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1"
                               >
@@ -671,7 +765,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => handleCancel(sub.id, sub.name, sub.price, sub.frequency)}
+                                onClick={() => handleCancelRequest(sub)}
                                 disabled={isLoading}
                                 className="bg-rose-500 hover:bg-rose-600 disabled:opacity-50 text-white font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1"
                               >
@@ -679,6 +773,24 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                               </button>
                             )}
                           </>
+                        )}
+
+                        {isRequested && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveScript({
+                                provider: sub.provider,
+                                title: `Awaiting Verification for ${sub.provider}`,
+                                text: `Your professional cancellation request letter was successfully generated and sent to billing.\n\nPlease log in to your ${sub.provider} account or check your bank/card statements over the next 1-2 days to confirm that recurring billing charges has stopped.\n\nOnce confirmed, verify cancellation here to update your ledger permanently.`,
+                                type: "cancel",
+                                subId: sub.id
+                              });
+                            }}
+                            className="bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                          >
+                            Verify Cancel
+                          </button>
                         )}
                       </div>
                     </div>
@@ -688,7 +800,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
             </AnimatePresence>
           </div>
 
-          {/* Expense Category Breakdown Chart - Visual Polish */}
+          {/* Spend Breakdown Chart */}
           <div className="bg-white border border-slate-200/80 rounded-xl p-5 shadow-sm space-y-4">
             <h4 className="text-xs font-bold text-slate-950 uppercase tracking-wider flex items-center gap-1.5">
               <Layers className="w-3.5 h-3.5 text-slate-500" /> Active Spending Breakdown by Category
@@ -700,7 +812,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                   <div key={idx} className="space-y-1">
                     <div className="flex justify-between text-xs">
                       <span className="capitalize text-slate-600 font-medium">{cat.name}</span>
-                      <span className="text-slate-950 font-bold">${cat.value}/mo <span className="text-slate-400 font-normal">({percentage.toFixed(0)}%)</span></span>
+                      <span className="text-slate-950 font-bold">{formatCurrency(cat.value, "USD")}/mo <span className="text-slate-400 font-normal">({percentage.toFixed(0)}%)</span></span>
                     </div>
                     <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
                       <div 
@@ -716,7 +828,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
 
         </div>
 
-        {/* Right Side: Action outputs, Letters & Venture Viability - 5 Columns */}
+        {/* Right Side: Action outputs & letters */}
         <div className="lg:col-span-5 space-y-6">
           <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
             AI Assistant Outputs
@@ -744,6 +856,20 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                 {activeScript.text}
               </div>
 
+              {activeScript.type === "cancel" && activeScript.subId && (
+                <div className="border-t border-slate-200 pt-3 flex flex-col gap-2">
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Check your billing statements. Once confirmed that the provider cancelled charge renewals, verify cancellation below to update your stats.
+                  </p>
+                  <button
+                    onClick={() => handleVerifyCancellation(activeScript.subId!)}
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 rounded-lg shadow-sm flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <CheckCircle className="w-4 h-4" /> Verify Charge Removal (Confirm Savings)
+                  </button>
+                </div>
+              )}
+
               {copied && (
                 <p className="text-[11px] text-emerald-600 font-semibold text-center flex items-center justify-center gap-1">
                   <Check className="w-3.5 h-3.5" /> Letter copied to clipboard! Ready to mail or email.
@@ -761,6 +887,30 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
               </div>
             </div>
           )}
+
+          {/* Real observed and inferred information warning */}
+          <div className="bg-amber-50 border border-amber-200/60 rounded-xl p-5 space-y-3 text-xs text-slate-800 leading-relaxed">
+            <h5 className="font-bold text-slate-950 flex items-center gap-1.5">
+              <ShieldCheck className="w-4 h-4 text-amber-600" /> Verifiable Data Guarantee
+            </h5>
+            <p>
+              Unlike standard mock systems, our Statement Parser runs authentic, direct scans of bank statement files and provides direct verification steps.
+            </p>
+            <div className="grid grid-cols-3 gap-2 pt-1 font-semibold text-[10px] text-center">
+              <div className="bg-slate-100 p-2 rounded border border-slate-200/50">
+                <span className="block text-slate-950">Observed</span>
+                <span className="text-slate-500 font-normal">Real prices, dates</span>
+              </div>
+              <div className="bg-slate-100 p-2 rounded border border-slate-200/50">
+                <span className="block text-slate-950">Inferred</span>
+                <span className="text-slate-500 font-normal">Recurring checks</span>
+              </div>
+              <div className="bg-slate-100 p-2 rounded border border-slate-200/50">
+                <span className="block text-slate-950">Unknown</span>
+                <span className="text-slate-500 font-normal">Eligibilities, usages</span>
+              </div>
+            </div>
+          </div>
 
           {/* Leak Guard Security Center */}
           <div className="bg-emerald-50/40 border border-emerald-200/50 rounded-xl p-6 space-y-5 shadow-sm animate-fade-in text-slate-800">
@@ -808,7 +958,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
             <div className="bg-emerald-100/40 p-3.5 rounded-lg border border-emerald-200/30 text-[11px] text-slate-700 leading-relaxed flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
               <span>
-                <strong>Your security rating is Good.</strong> By auto-cancelling the flagged leaks, your annual savings will exceed <strong>$720.00</strong>.
+                <strong>Your security rating is verified.</strong> By auto-cancelling identified leaks, your annual savings will exceed <strong>$720.00</strong>.
               </span>
             </div>
           </div>
@@ -817,4 +967,6 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
       </div>
     </div>
   );
-}
+};
+
+export default SubscriptionSimulator;

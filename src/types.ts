@@ -35,16 +35,42 @@ export interface SaaSAnalysis {
 }
 
 export interface SubscriptionItem {
-  id: string;
+  id: number;
+  userId: number;
+  provider: string;
   name: string;
-  category: "entertainment" | "utility" | "fitness" | "productivity" | "other";
-  price: number;
-  frequency: "monthly" | "annually";
-  lastUsed: string; // ISO date or description
-  potentialSavings: number; // e.g. lower plan available, or unused
-  status: "active" | "flagged" | "cancelling" | "cancelled" | "negotiating" | "negotiated";
-  originalPrice?: number;
-  logoUrl?: string;
+  category: "entertainment" | "utility" | "fitness" | "productivity" | "other" | string;
+  amount: number;
+  currency: string; // 'USD' or 'INR'
+  frequency: "monthly" | "annually" | string;
+  lastTransactionDate?: string | null;
+  status: "active" | "flagged" | "cancellation_requested" | "awaiting_confirmation" | "cancelled" | "verified_cancelled";
+  potentialSavings: number;
+  confirmedSavings: number;
+  createdAt?: string;
+  updatedAt?: string;
+  
+  // Frontend dynamic items for compatibility
+  observed?: {
+    merchant: string;
+    amount: number;
+    currency: string;
+    date: string;
+    frequency: string;
+    description: string;
+  };
+  inferred?: {
+    likelyRecurring: boolean;
+    likelySubscription: boolean;
+    possibleCategory: string;
+    estimatedSavings: number;
+  };
+  unknown?: {
+    actualServiceUsage: string;
+    whetherUserWantsService: string;
+    cancellationEligibility: string;
+    refundEligibility: string;
+  };
 }
 
 export interface PredefinedIdea {

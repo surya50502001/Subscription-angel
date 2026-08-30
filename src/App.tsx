@@ -1,63 +1,60 @@
 import { useState, useEffect } from "react";
-import SubscriptionSimulator from "./components/SubscriptionSimulator";
+import SubscriptionSimulator from "./components/SubscriptionSimulator.tsx";
+import { AuthProvider, useAuth } from "./context/AuthContext.tsx";
 import { 
   ShieldCheck, 
-  Lightbulb, 
   Sparkles, 
   ArrowRight, 
-  RefreshCw, 
-  Rocket, 
-  Target,
-  FileText,
-  AlertCircle,
-  Layout,
-  Layers,
-  Heart,
-  TrendingDown,
-  Lock,
-  MessageSquare,
-  ChevronRight,
-  Shield,
-  Coins,
-  DollarSign,
-  Crown
+  ChevronRight, 
+  Shield, 
+  Lock, 
+  Heart, 
+  Crown,
+  LogOut,
+  UserCheck
 } from "lucide-react";
 
-export default function App() {
-  // Dual-mode view: "site" (Public Landing Website) vs "app" (Subscriber Dashboard Portal)
+function AppContent() {
+  const { user, token, logout, loginWithGoogle } = useAuth();
   const [viewMode, setViewMode] = useState<"site" | "app">("site");
-  
-  // Real Premium subscription state (persisted via localStorage)
-  const [isPremium, setIsPremium] = useState<boolean>(() => {
-    return localStorage.getItem("subguardian_premium_active") === "true";
-  });
-  
   const [stripeLoading, setStripeLoading] = useState(false);
-  const [checkoutNotification, setCheckoutNotification] = useState<"success" | "cancel" | null>(null);
+  const [isPremium, setIsPremium] = useState(false);
 
+  // Sync isPremium with the authenticated database subscription plan
   useEffect(() => {
-    // Check URL parameters for Stripe Checkout success/cancel
-    const params = new URLSearchParams(window.location.search);
-    const status = params.get("checkout_status");
-    if (status === "success") {
-      localStorage.setItem("subguardian_premium_active", "true");
-      setIsPremium(true);
-      setCheckoutNotification("success");
-      setViewMode("app");
-      // Clean up URL parameters
-      window.history.replaceState({}, document.title, window.location.pathname);
-    } else if (status === "cancel") {
-      setCheckoutNotification("cancel");
-      window.history.replaceState({}, document.title, window.location.pathname);
+    if (user && token) {
+      const checkSubscription = async () => {
+        try {
+          const res = await fetch("/api/me/subscription", {
+            headers: { "Authorization": `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setIsPremium(data.premium);
+          }
+        } catch (e) {
+          console.error("Failed to query subscription status:", e);
+        }
+      };
+      checkSubscription();
+    } else {
+      setIsPremium(false);
     }
-  }, []);
+  }, [user, token]);
 
   const handleStripeCheckout = async () => {
+    if (!token) {
+      await loginWithGoogle();
+      return;
+    }
     setStripeLoading(true);
     try {
       const response = await fetch("/api/stripe/create-checkout-session", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
       });
       const data = await response.json();
       if (data.url) {
@@ -97,30 +94,47 @@ export default function App() {
 
           <div className="flex items-center gap-3">
             {isPremium && (
-              <div className="flex items-center gap-1 text-[10px] bg-amber-500 text-slate-950 font-black px-2.5 py-1 rounded-full uppercase tracking-wider animate-pulse shadow-sm">
-                <Crown className="w-3 h-3 fill-slate-950" /> Premium Shield Active
+              <div className="flex items-center gap-1 text-[10px] bg-amber-500 text-slate-950 font-black px-2.5 py-1 rounded-full uppercase tracking-wider shadow-sm">
+                <Crown className="w-3 h-3 fill-slate-950" /> Premium Active
               </div>
             )}
-            {viewMode === "site" ? (
-              <button
-                onClick={() => setViewMode("app")}
-                className="bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs px-4 py-2 rounded-lg transition-all cursor-pointer flex items-center gap-1"
-              >
-                Launch App Portal <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            ) : (
+            
+            {user ? (
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200/50">
-                  <span className="w-2 h-2 bg-emerald-500 rounded-full"></span>
-                  Securely Connected
+                <div className="hidden sm:flex items-center gap-2 text-xs font-semibold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200/50">
+                  <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
+                  <span className="max-w-[120px] truncate">{user.email}</span>
                 </div>
+                {viewMode === "site" ? (
+                  <button
+                    onClick={() => setViewMode("app")}
+                    className="bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs px-4 py-2 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                  >
+                    Open Portal <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setViewMode("site")}
+                    className="text-slate-500 hover:text-slate-900 font-bold text-xs py-1.5 px-3 rounded-lg border border-slate-200 hover:bg-slate-50 transition-all cursor-pointer flex items-center gap-1"
+                  >
+                    Landing Site
+                  </button>
+                )}
                 <button
-                  onClick={() => setViewMode("site")}
-                  className="text-slate-500 hover:text-slate-900 font-bold text-xs py-1.5 px-3 rounded-lg border border-slate-200 hover:bg-slate-50 transition-all cursor-pointer"
+                  onClick={logout}
+                  className="text-slate-400 hover:text-rose-600 p-2 transition-colors cursor-pointer"
+                  title="Sign Out"
                 >
-                  Log Out
+                  <LogOut className="w-4 h-4" />
                 </button>
               </div>
+            ) : (
+              <button
+                onClick={loginWithGoogle}
+                className="bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs px-4 py-2 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+              >
+                Sign In with Google
+              </button>
             )}
           </div>
         </div>
@@ -142,7 +156,7 @@ export default function App() {
             </h2>
             
             <p className="text-slate-600 text-sm md:text-base max-w-2xl mx-auto leading-relaxed">
-              The average household wastes **$219 every single month** on unused trials, gym memberships, and overpriced internet fees. SubGuardian connects to your statements, detects leaks, and saves you money in 1 tap.
+              The average household wastes over <strong>$200 every single month</strong> on unused trials, gym memberships, and overpriced utility bills. SubGuardian reads transaction logs, detects leak threats, and helps cancel them.
             </p>
 
             <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -162,9 +176,9 @@ export default function App() {
 
             {/* Graphic Trust Badges */}
             <div className="pt-8 border-t border-slate-200/60 max-w-3xl mx-auto flex flex-wrap justify-center gap-x-12 gap-y-4 text-xs text-slate-400 font-semibold">
-              <span className="flex items-center gap-1.5"><Shield className="w-4 h-4 text-slate-300" /> Bank-Grade 256-Bit SSL</span>
+              <span className="flex items-center gap-1.5"><Shield className="w-4 h-4 text-slate-300" /> Real-time Audit logs</span>
               <span className="flex items-center gap-1.5"><Lock className="w-4 h-4 text-slate-300" /> 100% Privacy Protected</span>
-              <span className="flex items-center gap-1.5"><Heart className="w-4 h-4 text-slate-300" /> Over $2.4M Saved To Date</span>
+              <span className="flex items-center gap-1.5"><Heart className="w-4 h-4 text-slate-300" /> Cloud PostgreSQL Storage</span>
             </div>
           </section>
 
@@ -172,7 +186,7 @@ export default function App() {
           <section id="how-it-works" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 bg-white rounded-2xl border border-slate-200/80 shadow-sm">
             <div className="text-center max-w-2xl mx-auto mb-12">
               <h3 className="text-2xl font-bold tracking-tight text-slate-950">How SubGuardian Safeguards Your Wallet</h3>
-              <p className="text-xs text-slate-500 mt-2">Zero effort. Ultimate financial protection.</p>
+              <p className="text-xs text-slate-500 mt-2 font-medium">Verifiable results. Safe financial checks.</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
@@ -186,17 +200,17 @@ export default function App() {
 
               <div className="space-y-3 p-4">
                 <div className="w-10 h-10 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center font-bold text-amber-700">2</div>
-                <h4 className="font-bold text-slate-950 text-sm">One-Tap Cancellation Requests</h4>
+                <h4 className="font-bold text-slate-950 text-sm">Professional Cancellation Request</h4>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  No more annoying phone calls or certified mail loops. Click a button to draft and send legally valid refund claims and contract cancellations.
+                  No more annoying phone calls or certified mail loops. Click a button to draft and request refund claims and contract cancellations.
                 </p>
               </div>
 
               <div className="space-y-3 p-4">
                 <div className="w-10 h-10 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center font-bold text-amber-700">3</div>
-                <h4 className="font-bold text-slate-950 text-sm">Continuous Promos & Savings</h4>
+                <h4 className="font-bold text-slate-950 text-sm">Loyalty script promos</h4>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Our system keeps scanning. If Comcast, Verizon, or AT&T raise prices or offer loyalty tiers, the app auto-negotiates to lock in the absolute lowest rate.
+                  Our system helps negotiation. If broadband, cellular, or cable providers raise prices, the app generates custom retention templates to lock in lower promo rates.
                 </p>
               </div>
             </div>
@@ -239,7 +253,7 @@ export default function App() {
                     disabled={stripeLoading}
                     className="w-full bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs py-3 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50"
                   >
-                    {stripeLoading ? "Loading Stripe Checkout..." : "Upgrade with Stripe ($4.99)"}
+                    {stripeLoading ? "Loading..." : "Upgrade with Stripe ($4.99)"}
                   </button>
                 )}
               </div>
@@ -252,7 +266,6 @@ export default function App() {
       {/* VIEW MODE 2: ACTIVE SUBSCRIBER WEB APP DASHBOARD */}
       {viewMode === "app" && (
         <div className="animate-fade-in">
-          
           <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 space-y-10">
             
             {/* User Welcome Board */}
@@ -272,17 +285,21 @@ export default function App() {
               </div>
             </section>
 
-            {/* Active app simulator */}
-            <SubscriptionSimulator 
-              isPremium={isPremium} 
-              handleUpgrade={handleStripeCheckout} 
-              stripeLoading={stripeLoading} 
-            />
+            {/* Active App Component */}
+            <SubscriptionSimulator />
 
           </main>
         </div>
       )}
 
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
