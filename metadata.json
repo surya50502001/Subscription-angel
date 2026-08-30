@@ -1,0 +1,6 @@
+{
+  "name": "SubGuardian",
+  "description": "An automated subscription guardian and bill negotiator that finds digital leaks, drafts cancellation letters, and negotiates loyalty rates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
