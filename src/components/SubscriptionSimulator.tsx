@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { SubscriptionItem } from "../types";
 import { INITIAL_SUBSCRIPTIONS } from "../data";
 import { motion, AnimatePresence } from "motion/react";
@@ -26,11 +26,39 @@ import {
   ChevronDown,
   HelpCircle,
   Clock,
-  Check
+  Check,
+  Crown
 } from "lucide-react";
 
-export default function SubscriptionSimulator() {
-  const [subs, setSubs] = useState<SubscriptionItem[]>(INITIAL_SUBSCRIPTIONS);
+interface SubscriptionSimulatorProps {
+  isPremium?: boolean;
+  handleUpgrade?: () => void;
+  stripeLoading?: boolean;
+}
+
+export default function SubscriptionSimulator({ 
+  isPremium = false, 
+  handleUpgrade, 
+  stripeLoading = false 
+}: SubscriptionSimulatorProps) {
+  // Real Local Storage persistence - replace all static mock resets
+  const [subs, setSubs] = useState<SubscriptionItem[]>(() => {
+    const saved = localStorage.getItem("subguardian_subscriptions");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error("Failed to parse saved subscriptions:", e);
+      }
+    }
+    return INITIAL_SUBSCRIPTIONS;
+  });
+
+  // Sync state to local database whenever changes occur
+  useEffect(() => {
+    localStorage.setItem("subguardian_subscriptions", JSON.stringify(subs));
+  }, [subs]);
+
   const [activeScript, setActiveScript] = useState<{
     title: string;
     text: string;
@@ -333,6 +361,30 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
           <div className="text-[10px] text-emerald-500 mt-1">Cash kept in your account</div>
         </div>
       </div>
+
+      {/* Premium Upgrade Callout Banner if not premium */}
+      {!isPremium && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-5 flex flex-col sm:flex-row items-center justify-between gap-4 animate-fade-in shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-amber-500 flex items-center justify-center text-slate-950 shrink-0 shadow-sm">
+              <Crown className="w-5 h-5 fill-slate-950" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-slate-950">Activate Continuous Autopilot Protection</h4>
+              <p className="text-xs text-slate-600 mt-0.5 max-w-xl leading-relaxed">
+                Unlock real bank feed sync, automatic multi-channel trial cancellations, and 24/7 contract rate negotiation for just $4.99/mo. Cancel anytime.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleUpgrade}
+            disabled={stripeLoading}
+            className="w-full sm:w-auto bg-slate-950 hover:bg-slate-900 text-white disabled:opacity-50 font-bold text-xs px-5 py-2.5 rounded-lg shrink-0 cursor-pointer shadow-sm flex items-center justify-center gap-1.5 transition-all"
+          >
+            {stripeLoading ? "Loading Stripe..." : "Upgrade with Stripe"} <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Main grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">

@@ -1,8 +1,8 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import Stripe from "stripe";
 
 dotenv.config();
 
@@ -10,6 +10,19 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+// Initialize Stripe client lazily
+let stripeClient: Stripe | null = null;
+function getStripe(): Stripe | null {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) return null;
+  if (!stripeClient) {
+    stripeClient = new Stripe(key, {
+      apiVersion: "2025-01-27.accredited" as any,
+    });
+  }
+  return stripeClient;
+}
 
 // Initialize Gemini API Client safely
 const apiKey = process.env.GEMINI_API_KEY;
@@ -308,10 +321,58 @@ Provide a step-by-step loyalty negotiation dialogue, including responses to stan
   }
 });
 
+// Endpoint 4: Create Stripe Checkout Session
+app.post("/api/stripe/create-checkout-session", async (req, res) => {
+  try {
+    const appUrl = process.env.APP_URL || `http://localhost:3000`;
+    const stripe = getStripe();
+
+    if (!stripe) {
+      // Graceful Sandbox Mode fallback for AI Studio testing and sandbox accounts
+      console.log("[Stripe] STRIPE_SECRET_KEY missing. Generating simulated checkout link...");
+      const sandboxId = "cs_sandbox_" + Math.random().toString(36).substring(7);
+      return res.json({
+        id: sandboxId,
+        url: `${appUrl}?checkout_status=success&session_id=${sandboxId}`,
+        isSandbox: true
+      });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      line_items: [
+        {
+          price_data: {
+            currency: "usd",
+            product_data: {
+              name: "SubGuardian Premium Shield",
+              description: "Continuous automated scanning, unlimited subscription cancellations, and loyalty promo rate negotiators.",
+            },
+            unit_amount: 499, // $4.99 USD
+            recurring: {
+              interval: "month",
+            },
+          },
+          quantity: 1,
+        },
+      ],
+      mode: "subscription",
+      success_url: `${appUrl}?checkout_status=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${appUrl}?checkout_status=cancel`,
+    });
+
+    res.json({ id: session.id, url: session.url, isSandbox: false });
+  } catch (error: any) {
+    console.error("Stripe Checkout Error:", error);
+    res.status(500).json({ error: error.message || "Failed to create Stripe checkout session." });
+  }
+});
+
 // Setup Vite Dev Server / Static Asset Serving
 async function bootstrap() {
   if (process.env.NODE_ENV !== "production") {
     console.log("Starting server in development mode with Vite middleware...");
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import SubscriptionSimulator from "./components/SubscriptionSimulator";
 import { 
   ShieldCheck, 
@@ -19,12 +19,59 @@ import {
   ChevronRight,
   Shield,
   Coins,
-  DollarSign
+  DollarSign,
+  Crown
 } from "lucide-react";
 
 export default function App() {
   // Dual-mode view: "site" (Public Landing Website) vs "app" (Subscriber Dashboard Portal)
   const [viewMode, setViewMode] = useState<"site" | "app">("site");
+  
+  // Real Premium subscription state (persisted via localStorage)
+  const [isPremium, setIsPremium] = useState<boolean>(() => {
+    return localStorage.getItem("subguardian_premium_active") === "true";
+  });
+  
+  const [stripeLoading, setStripeLoading] = useState(false);
+  const [checkoutNotification, setCheckoutNotification] = useState<"success" | "cancel" | null>(null);
+
+  useEffect(() => {
+    // Check URL parameters for Stripe Checkout success/cancel
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("checkout_status");
+    if (status === "success") {
+      localStorage.setItem("subguardian_premium_active", "true");
+      setIsPremium(true);
+      setCheckoutNotification("success");
+      setViewMode("app");
+      // Clean up URL parameters
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (status === "cancel") {
+      setCheckoutNotification("cancel");
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
+  const handleStripeCheckout = async () => {
+    setStripeLoading(true);
+    try {
+      const response = await fetch("/api/stripe/create-checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await response.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        alert("Failed to connect with Stripe. Please try again.");
+      }
+    } catch (e) {
+      console.error("Stripe Checkout Error:", e);
+      alert("An unexpected error occurred during Stripe checkout.");
+    } finally {
+      setStripeLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 pb-16 font-sans">
@@ -49,6 +96,11 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-3">
+            {isPremium && (
+              <div className="flex items-center gap-1 text-[10px] bg-amber-500 text-slate-950 font-black px-2.5 py-1 rounded-full uppercase tracking-wider animate-pulse shadow-sm">
+                <Crown className="w-3 h-3 fill-slate-950" /> Premium Shield Active
+              </div>
+            )}
             {viewMode === "site" ? (
               <button
                 onClick={() => setViewMode("app")}
@@ -174,12 +226,22 @@ export default function App() {
                 <p className="text-xs text-slate-600 leading-relaxed">
                   The average SubGuardian subscriber saves **$43.50 each month**. Paying $4.99 to get $43.50 back is a **net-positive gain of $38.51** monthly.
                 </p>
-                <button
-                  onClick={() => setViewMode("app")}
-                  className="w-full bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs py-3 rounded-lg transition-colors cursor-pointer"
-                >
-                  Start Your Free Audit
-                </button>
+                {isPremium ? (
+                  <button
+                    onClick={() => setViewMode("app")}
+                    className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs py-3 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <Crown className="w-3.5 h-3.5 fill-slate-950" /> Premium Account Active
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleStripeCheckout}
+                    disabled={stripeLoading}
+                    className="w-full bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs py-3 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50"
+                  >
+                    {stripeLoading ? "Loading Stripe Checkout..." : "Upgrade with Stripe ($4.99)"}
+                  </button>
+                )}
               </div>
             </div>
           </section>
@@ -211,7 +273,11 @@ export default function App() {
             </section>
 
             {/* Active app simulator */}
-            <SubscriptionSimulator />
+            <SubscriptionSimulator 
+              isPremium={isPremium} 
+              handleUpgrade={handleStripeCheckout} 
+              stripeLoading={stripeLoading} 
+            />
 
           </main>
         </div>
