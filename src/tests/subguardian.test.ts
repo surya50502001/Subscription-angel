@@ -1,4 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import request from "supertest";
+
+export const mockConstructEvent = vi.fn();
+export const mockCheckoutSessionsCreate = vi.fn();
+
+vi.mock("stripe", () => {
+  return {
+    default: vi.fn().mockImplementation(function() {
+      return {
+        webhooks: {
+          constructEvent: (...args: any[]) => mockConstructEvent(...args),
+        },
+        checkout: {
+          sessions: {
+            create: (...args: any[]) => mockCheckoutSessionsCreate(...args),
+          }
+        }
+      };
+    })
+  };
+});
 
 // Mock the database and Stripe client to make tests extremely fast and predictable
 vi.mock("../db/index.ts", () => {
@@ -323,5 +344,166 @@ describe("Subscription Guardian - 14 Production Readiness Scenarios", () => {
     // Verify Premium entitlement activated
     expect(mockUser.premium).toBe(true);
     expect(mockUser.stripeSubscriptionStatus).toBe("active");
+  });
+
+  // Scenario 16: Verify that the actual Express webhook endpoint rejects invalid signature requests with HTTP 400
+  it("Scenario 16: Verify actual Webhook endpoint rejects invalid signature requests with HTTP 400", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_key";
+    process.env.STRIPE_WEBHOOK_SECRET = "whsec_secret";
+
+    // Mock constructEvent to throw signature verification error
+    mockConstructEvent.mockImplementation(() => {
+      throw new Error("Invalid signature verification failed.");
+    });
+
+    const response = await request(app)
+      .post("/api/stripe/webhook")
+      .set("stripe-signature", "invalid-sig-header")
+      .send("test-payload");
+
+    expect(response.status).toBe(400);
+    expect(response.body).not.toBeNull();
+    expect(response.body.error).toContain("Webhook Signature Error");
+  });
+
+  // Scenario 17: Verify that the actual Webhook endpoint updates PostgreSQL user records upon valid signature
+  it("Scenario 17: Verify actual Webhook endpoint updates user premium status in PostgreSQL database", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_key";
+    process.env.STRIPE_WEBHOOK_SECRET = "whsec_secret";
+
+    // Setup successful constructEvent mock
+    const mockEvent = {
+      id: "evt_test_unique_id_999",
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          client_reference_id: "456",
+          customer: "cus_test_cust",
+          subscription: "sub_test_sub"
+        }
+      }
+    };
+    mockConstructEvent.mockReturnValue(mockEvent);
+
+    // Setup DB Update Mock for Drizzle update queries
+    const mockUpdateWhere = vi.fn().mockResolvedValue([{ id: 456 }]);
+    const mockUpdateSet = vi.fn().mockReturnValue({
+      where: mockUpdateWhere
+    });
+    (db.update as any).mockReturnValue({
+      set: mockUpdateSet
+    });
+
+    const response = await request(app)
+      .post("/api/stripe/webhook")
+      .set("stripe-signature", "valid-sig")
+      .send(JSON.stringify(mockEvent));
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ received: true });
+
+    // Verify Drizzle database update was invoked with correct set fields
+    expect(db.update).toHaveBeenCalled();
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
+      stripeCustomerId: "cus_test_cust",
+      stripeSubscriptionId: "sub_test_sub",
+      stripeSubscriptionStatus: "active",
+      premium: true
+    }));
+  });
+
+  // Scenario 18: Verify actual Webhook endpoint removes premium status upon customer.subscription.deleted
+  it("Scenario 18: Verify actual Webhook endpoint removes premium status upon subscription deletion", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_key";
+    process.env.STRIPE_WEBHOOK_SECRET = "whsec_secret";
+
+    // Setup successful constructEvent mock for deleted subscription
+    const mockEvent = {
+      id: "evt_test_unique_id_deleted_111",
+      type: "customer.subscription.deleted",
+      data: {
+        object: {
+          id: "sub_test_sub_to_delete",
+          customer: "cus_test_cust"
+        }
+      }
+    };
+    mockConstructEvent.mockReturnValue(mockEvent);
+
+    // Setup DB Update Mock for Drizzle update queries
+    const mockUpdateWhere = vi.fn().mockResolvedValue([{ id: 456 }]);
+    const mockUpdateSet = vi.fn().mockReturnValue({
+      where: mockUpdateWhere
+    });
+    (db.update as any).mockReturnValue({
+      set: mockUpdateSet
+    });
+
+    const response = await request(app)
+      .post("/api/stripe/webhook")
+      .set("stripe-signature", "valid-sig")
+      .send(JSON.stringify(mockEvent));
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ received: true });
+
+    // Verify Drizzle database update was invoked to remove Premium
+    expect(db.update).toHaveBeenCalled();
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({
+      stripeSubscriptionStatus: "cancelled",
+      premium: false
+    }));
+  });
+
+  // Scenario 19: Verify webhook processing is strictly idempotent and ignores replay attacks
+  it("Scenario 19: Verify webhook processing is strictly idempotent and ignores replay attacks", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_key";
+    process.env.STRIPE_WEBHOOK_SECRET = "whsec_secret";
+
+    // Setup successful constructEvent mock
+    const mockEvent = {
+      id: "evt_duplicate_id_555",
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          client_reference_id: "456",
+          customer: "cus_test_cust",
+          subscription: "sub_test_sub"
+        }
+      }
+    };
+    mockConstructEvent.mockReturnValue(mockEvent);
+
+    // Setup DB Update Mock
+    const mockUpdateWhere = vi.fn().mockResolvedValue([]);
+    const mockUpdateSet = vi.fn().mockReturnValue({
+      where: mockUpdateWhere
+    });
+    (db.update as any).mockReturnValue({
+      set: mockUpdateSet
+    });
+
+    // First invocation (should process)
+    const response1 = await request(app)
+      .post("/api/stripe/webhook")
+      .set("stripe-signature", "valid-sig")
+      .send(JSON.stringify(mockEvent));
+
+    expect(response1.status).toBe(200);
+    expect(response1.body).toEqual({ received: true });
+    expect(db.update).toHaveBeenCalled();
+
+    // Clear call count for database updates
+    vi.mocked(db.update).mockClear();
+
+    // Second invocation with identical ID (should skip and return duplicate)
+    const response2 = await request(app)
+      .post("/api/stripe/webhook")
+      .set("stripe-signature", "valid-sig")
+      .send(JSON.stringify(mockEvent));
+
+    expect(response2.status).toBe(200);
+    expect(response2.body).toEqual({ received: true, duplicate: true });
+    expect(db.update).not.toHaveBeenCalled();
   });
 });

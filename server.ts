@@ -758,6 +758,9 @@ app.post("/api/stripe/create-checkout-session", requireAuth, async (req: AuthReq
   }
 });
 
+// Deduplication store for Stripe Webhook events to guarantee idempotency
+const processedStripeEvents = new Set<string>();
+
 // Endpoint: Secure Stripe Webhook signature verification & state handling
 app.post("/api/stripe/webhook", express.raw({ type: "*/*" }), async (req, res) => {
   const stripe = getStripe();
@@ -789,6 +792,17 @@ app.post("/api/stripe/webhook", express.raw({ type: "*/*" }), async (req, res) =
   }
 
   // Idempotent processing of subscription lifecycle actions
+  if (event && event.id) {
+    if (processedStripeEvents.has(event.id)) {
+      console.log(`[Stripe Webhook] Event ${event.id} already processed. Skipping duplicate to maintain idempotency.`);
+      return res.json({ received: true, duplicate: true });
+    }
+    processedStripeEvents.add(event.id);
+    if (processedStripeEvents.size > 10000) {
+      processedStripeEvents.clear();
+    }
+  }
+
   try {
     const dataObject = event.data.object as any;
     const userIdStr = dataObject.client_reference_id || (dataObject.metadata && dataObject.metadata.userId);
@@ -908,7 +922,7 @@ async function bootstrap() {
   });
 }
 
-if (process.env.NODE_ENV !== "test") {
+if (process.env.NODE_ENV !== "test" && !process.env.VITEST) {
   bootstrap().catch((err) => {
     console.error("Failed to bootstrap server:", err);
     process.exit(1);
