@@ -42,7 +42,7 @@ function AppContent() {
     }
   }, [user, token]);
 
-  const handleStripeCheckout = async () => {
+  const handleStripeCheckout = async (plan: "premium" | "yearly") => {
     if (!token) {
       await loginWithGoogle();
       return;
@@ -55,6 +55,7 @@ function AppContent() {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`
         },
+        body: JSON.stringify({ plan }),
       });
       const data = await response.json();
       if (data.url) {
@@ -216,44 +217,105 @@ function AppContent() {
             </div>
           </section>
 
-          {/* Flat Commercial Pricing Model Section */}
-          <section id="pricing" className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+          {/* Three-Tier Pricing Section */}
+          <section id="pricing" className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
             <div className="text-center space-y-2">
-              <h3 className="text-2xl font-bold text-slate-900 tracking-tight">Fair, Simple, High-ROI Pricing</h3>
-              <p className="text-xs text-slate-500">We make money ONLY when we save you more.</p>
+              <h3 className="text-3xl font-black text-slate-900 tracking-tight">Simple, Transparent Pricing</h3>
+              <p className="text-xs text-slate-500">Pick the plan that works best to safeguard your bank accounts.</p>
             </div>
 
-            <div className="bg-white border border-slate-200/90 rounded-2xl p-8 shadow-sm flex flex-col md:flex-row items-center justify-between gap-8">
-              <div className="space-y-4 max-w-md">
-                <div className="text-xs font-bold text-amber-700 uppercase tracking-widest">Standard Premium Account</div>
-                <h4 className="text-3xl font-black text-slate-950">$4.99 <span className="text-xs text-slate-400 font-medium">/ month</span></h4>
-                <ul className="space-y-2 text-xs text-slate-600">
-                  <li className="flex items-center gap-2">✓ Unlimited Bank Accounts Sync</li>
-                  <li className="flex items-center gap-2">✓ Automated 1-Tap trials cancellations</li>
-                  <li className="flex items-center gap-2">✓ AI Broadband & Cable rates negotiation</li>
-                  <li className="flex items-center gap-2">✓ 100% Secure, Privacy-First pledge</li>
-                </ul>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* FREE TIER */}
+              <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-6">
+                <div className="space-y-4">
+                  <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">Free</div>
+                  <div>
+                    <h4 className="text-4xl font-black text-slate-950">₹0</h4>
+                    <p className="text-[11px] text-slate-400 mt-1">Basic detection features</p>
+                  </div>
+                  <ul className="space-y-2 text-xs text-slate-600 pt-2">
+                    <li className="flex items-center gap-2">✓ Basic subscription detection</li>
+                    <li className="flex items-center gap-2">✓ Manual statements import</li>
+                    <li className="flex items-center gap-2">✓ Potential leak risk score</li>
+                  </ul>
+                </div>
+                <button
+                  onClick={() => setViewMode("app")}
+                  className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs py-3 rounded-lg transition-colors cursor-pointer text-center"
+                >
+                  Start Detection Free
+                </button>
               </div>
 
-              <div className="bg-slate-50 p-6 rounded-xl border border-slate-200/60 max-w-sm text-center space-y-4">
-                <div className="text-[10px] text-slate-400 font-bold uppercase">Our Net ROI Promise</div>
-                <p className="text-xs text-slate-600 leading-relaxed">
-                  The average SubGuardian subscriber saves **$43.50 each month**. Paying $4.99 to get $43.50 back is a **net-positive gain of $38.51** monthly.
-                </p>
+              {/* PREMIUM TIER */}
+              <div className="bg-white border-2 border-amber-500/80 rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-6 relative overflow-hidden">
+                <div className="absolute right-0 top-0 bg-amber-500 text-slate-950 font-black text-[9px] uppercase tracking-wider px-3 py-1 rounded-bl-xl">
+                  Popular
+                </div>
+                <div className="space-y-4">
+                  <div className="text-xs font-bold text-amber-700 uppercase tracking-wider">Premium</div>
+                  <div>
+                    <h4 className="text-4xl font-black text-slate-950">₹49<span className="text-xs text-slate-400 font-medium"> / month</span></h4>
+                    <p className="text-[11px] text-slate-400 mt-1">Full protection suite</p>
+                  </div>
+                  <ul className="space-y-2 text-xs text-slate-600 pt-2">
+                    <li className="flex items-center gap-2">✓ Basic subscription detection</li>
+                    <li className="flex items-center gap-2">✓ AI negotiation assistant</li>
+                    <li className="flex items-center gap-2">✓ Instant alerts for trial leaks</li>
+                    <li className="flex items-center gap-2">✓ Complete cancellation assistance</li>
+                  </ul>
+                </div>
                 {isPremium ? (
                   <button
                     onClick={() => setViewMode("app")}
                     className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs py-3 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1"
                   >
-                    <Crown className="w-3.5 h-3.5 fill-slate-950" /> Premium Account Active
+                    <Crown className="w-3.5 h-3.5 fill-slate-950" /> Premium Active
                   </button>
                 ) : (
                   <button
-                    onClick={handleStripeCheckout}
+                    onClick={() => handleStripeCheckout("premium")}
                     disabled={stripeLoading}
                     className="w-full bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs py-3 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50"
                   >
-                    {stripeLoading ? "Loading..." : "Upgrade with Stripe ($4.99)"}
+                    {stripeLoading ? "Loading..." : "Upgrade Premium (₹49/mo)"}
+                  </button>
+                )}
+              </div>
+
+              {/* YEARLY TIER */}
+              <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-6 relative overflow-hidden">
+                <div className="absolute right-0 top-0 bg-emerald-500 text-white font-black text-[9px] uppercase tracking-wider px-3 py-1 rounded-bl-xl">
+                  Best Value
+                </div>
+                <div className="space-y-4">
+                  <div className="text-xs font-bold text-emerald-700 uppercase tracking-wider">Yearly</div>
+                  <div>
+                    <h4 className="text-4xl font-black text-slate-950">₹399<span className="text-xs text-slate-400 font-medium"> / year</span></h4>
+                    <p className="text-[11px] text-slate-400 mt-1">Save over 32% annually</p>
+                  </div>
+                  <ul className="space-y-2 text-xs text-slate-600 pt-2">
+                    <li className="flex items-center gap-2">✓ Basic subscription detection</li>
+                    <li className="flex items-center gap-2">✓ AI negotiation assistant</li>
+                    <li className="flex items-center gap-2">✓ Instant alerts for trial leaks</li>
+                    <li className="flex items-center gap-2">✓ Complete cancellation assistance</li>
+                    <li className="flex items-center gap-2 text-emerald-600 font-bold">✓ Best Value plan included</li>
+                  </ul>
+                </div>
+                {isPremium ? (
+                  <button
+                    onClick={() => setViewMode("app")}
+                    className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs py-3 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <Crown className="w-3.5 h-3.5 fill-slate-950" /> Premium Active
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleStripeCheckout("yearly")}
+                    disabled={stripeLoading}
+                    className="w-full bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs py-3 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50"
+                  >
+                    {stripeLoading ? "Loading..." : "Upgrade Yearly (₹399/yr)"}
                   </button>
                 )}
               </div>

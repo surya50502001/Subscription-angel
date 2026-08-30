@@ -338,6 +338,45 @@ Statement Text:
   }
 });
 
+const PROVIDER_ASSISTANCE: Record<string, { url: string; instructions: string }> = {
+  netflix: {
+    url: "https://www.netflix.com/youraccount",
+    instructions: "Sign in to Netflix, go to your Account page, click the 'Cancel Membership' button, and follow the prompts to complete the cancellation."
+  },
+  spotify: {
+    url: "https://www.spotify.com/account",
+    instructions: "Log in to your Spotify account page, scroll down to your plan, click 'Change Plan', and click 'Cancel Premium'."
+  },
+  equinox: {
+    url: "https://www.equinox.com/contactus",
+    instructions: "Equinox memberships must be cancelled by writing to club management, via certified mail, or through their contact form with 3-5 days advance notice."
+  },
+  hulu: {
+    url: "https://www.hulu.com/account",
+    instructions: "Log in to your Hulu account page, scroll to the 'Your Subscription' section, and click 'Cancel' next to your subscription status."
+  },
+  adobe: {
+    url: "https://account.adobe.com/plans",
+    instructions: "Sign in to Adobe Account, under 'My Plans' select 'Manage Plan' for the subscription you want to cancel, and click 'Cancel your plan'."
+  },
+  gym: {
+    url: "https://www.google.com/search?q=how+to+cancel+gym+membership",
+    instructions: "Most gyms require physical visits or certified mail. Provide them with your generated letter and request a signed receipt of cancellation."
+  },
+  comcast: {
+    url: "https://www.xfinity.com/support/articles/cancel-my-xfinity-services",
+    instructions: "Call Comcast support or visit an Xfinity Store with your generated negotiation/cancellation draft to request direct rate reduction or contract termination."
+  },
+  chatgpt: {
+    url: "https://chatgpt.com",
+    instructions: "Open ChatGPT, click on your profile photo, select 'My Plan', then select 'Manage Subscription' and click 'Cancel Plan'."
+  },
+  default: {
+    url: "https://www.google.com/search?q=how+to+cancel+",
+    instructions: "Log in to the provider's website, look for billing/account options, or contact their billing support directly with our generated professional request letter."
+  }
+};
+
 // Endpoint: Generate Professional Cancellation/Refund Request Form & update status to cancellation_requested
 app.post("/api/subscriptions/:id/request-cancel", requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -376,6 +415,17 @@ Generate a clear request, highlighting consumer concerns regarding unintended au
 
     const generatedMessage = response.text || "";
 
+    const providerKey = sub.provider.toLowerCase();
+    let assistance = PROVIDER_ASSISTANCE[providerKey];
+    if (!assistance) {
+      const matchingKey = Object.keys(PROVIDER_ASSISTANCE).find(key => providerKey.includes(key));
+      assistance = matchingKey ? PROVIDER_ASSISTANCE[matchingKey] : PROVIDER_ASSISTANCE.default;
+    }
+
+    const cancellationUrl = assistance.url.startsWith("https://www.google.com")
+      ? `${assistance.url}${encodeURIComponent(sub.provider)}+subscription`
+      : assistance.url;
+
     // 1. Update the subscription status securely inside the database to 'cancellation_requested' (NOT 'cancelled')
     await db.update(subscriptions)
       .set({
@@ -391,7 +441,7 @@ Generate a clear request, highlighting consumer concerns regarding unintended au
         subscriptionId: sub.id,
         status: "sent",
         provider: sub.provider,
-        cancellationUrl: `https://www.google.com/search?q=how+to+cancel+${encodeURIComponent(sub.provider)}+subscription`,
+        cancellationUrl: cancellationUrl,
         generatedMessage: generatedMessage,
       });
 
@@ -401,8 +451,9 @@ Generate a clear request, highlighting consumer concerns regarding unintended au
       subscriptionName: sub.name,
       amount: sub.amount,
       currency: sub.currency,
-      cancellationUrl: `https://www.google.com/search?q=how+to+cancel+${encodeURIComponent(sub.provider)}+subscription`,
+      cancellationUrl: cancellationUrl,
       generatedMessage: generatedMessage,
+      instructions: assistance.instructions,
     });
   } catch (error: any) {
     console.error("Cancellation generation failed:", error);
@@ -410,7 +461,92 @@ Generate a clear request, highlighting consumer concerns regarding unintended au
   }
 });
 
-// Endpoint: Verify Cancellation (Requires explicit user confirmation that transaction was actually checked and stopped)
+// Endpoint: Submit cancellation request (User states they submitted it to provider) -> Transitions to awaiting_confirmation
+app.post("/api/subscriptions/:id/submit-cancel", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const subId = parseInt(req.params.id);
+
+    const subList = await db.select()
+      .from(subscriptions)
+      .where(and(eq(subscriptions.id, subId), eq(subscriptions.userId, req.dbUser.id)));
+
+    if (subList.length === 0) {
+      return res.status(404).json({ error: "Subscription record not found." });
+    }
+
+    const sub = subList[0];
+    if (sub.status !== "cancellation_requested") {
+      return res.status(400).json({ error: "Subscription must be in cancellation_requested state to submit." });
+    }
+
+    await db.update(subscriptions)
+      .set({
+        status: "awaiting_confirmation",
+        updatedAt: new Date(),
+      })
+      .where(eq(subscriptions.id, sub.id));
+
+    await db.update(cancellationRequests)
+      .set({
+        status: "submitted",
+      })
+      .where(and(
+        eq(cancellationRequests.subscriptionId, sub.id),
+        eq(cancellationRequests.userId, req.dbUser.id)
+      ));
+
+    res.json({ success: true, status: "awaiting_confirmation" });
+  } catch (error: any) {
+    console.error("Submission failed:", error);
+    res.status(500).json({ error: error.message || "Unable to submit cancellation." });
+  }
+});
+
+// Endpoint: Confirm Provider Accepted cancellation (User states provider completed it) -> Transitions to cancelled
+app.post("/api/subscriptions/:id/confirm-provider-accepted", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const subId = parseInt(req.params.id);
+
+    const subList = await db.select()
+      .from(subscriptions)
+      .where(and(eq(subscriptions.id, subId), eq(subscriptions.userId, req.dbUser.id)));
+
+    if (subList.length === 0) {
+      return res.status(404).json({ error: "Subscription record not found." });
+    }
+
+    const sub = subList[0];
+    if (sub.status !== "awaiting_confirmation") {
+      return res.status(400).json({ error: "Subscription must be in awaiting_confirmation state to confirm provider acceptance." });
+    }
+
+    await db.update(subscriptions)
+      .set({
+        status: "cancelled",
+        updatedAt: new Date(),
+      })
+      .where(eq(subscriptions.id, sub.id));
+
+    await db.update(cancellationRequests)
+      .set({
+        status: "accepted",
+        completedAt: new Date(),
+      })
+      .where(and(
+        eq(cancellationRequests.subscriptionId, sub.id),
+        eq(cancellationRequests.userId, req.dbUser.id)
+      ));
+
+    res.json({ success: true, status: "cancelled" });
+  } catch (error: any) {
+    console.error("Provider confirmation failed:", error);
+    res.status(500).json({ error: error.message || "Unable to confirm cancellation." });
+  }
+});
+
+// Endpoint: Verify Cancellation via statement history (Transitions to verified_cancelled and Confirmed Savings)
 app.post("/api/subscriptions/:id/verify-cancel", requireAuth, async (req: AuthRequest, res) => {
   try {
     if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
@@ -425,6 +561,62 @@ app.post("/api/subscriptions/:id/verify-cancel", requireAuth, async (req: AuthRe
     }
 
     const sub = subList[0];
+    if (sub.status !== "cancelled") {
+      return res.status(400).json({ error: "Subscription must be in cancelled state to run transaction verification." });
+    }
+
+    // Perform explicit transaction checks to see if charge stopped
+    const allUserTx = await db.select()
+      .from(transactions)
+      .where(eq(transactions.userId, req.dbUser.id));
+
+    const cancelReqs = await db.select()
+      .from(cancellationRequests)
+      .where(and(
+        eq(cancellationRequests.subscriptionId, sub.id),
+        eq(cancellationRequests.userId, req.dbUser.id)
+      ))
+      .orderBy(cancellationRequests.id);
+
+    const requestDate = cancelReqs.length > 0 && cancelReqs[0].requestedAt
+      ? new Date(cancelReqs[0].requestedAt)
+      : new Date(sub.createdAt || new Date());
+
+    // Check if any transaction exists for this provider AFTER the cancellation request date
+    const newerCharge = allUserTx.find(tx => {
+      const isProvider = tx.merchant.toLowerCase().includes(sub.provider.toLowerCase()) || 
+                         sub.provider.toLowerCase().includes(tx.merchant.toLowerCase());
+      const txDate = new Date(tx.transactionDate);
+      return isProvider && txDate > requestDate;
+    });
+
+    if (newerCharge) {
+      return res.json({
+        success: false,
+        status: "cancelled",
+        message: `Verification failed. A recurring charge of ${sub.currency} ${newerCharge.amount} was detected from ${newerCharge.merchant} on ${newerCharge.transactionDate} after your cancellation request date.`,
+      });
+    }
+
+    // Get the newest overall transaction date to prove a new statement cycle has been scanned
+    let newestTxDate = new Date(0);
+    allUserTx.forEach(tx => {
+      const d = new Date(tx.transactionDate);
+      if (d > newestTxDate) {
+        newestTxDate = d;
+      }
+    });
+
+    // Require transaction statements with dates at least 1 day after the request date
+    const requestDatePlusOneDay = new Date(requestDate.getTime() + 24 * 60 * 60 * 1000);
+
+    if (newestTxDate < requestDatePlusOneDay) {
+      return res.json({
+        success: false,
+        status: "cancelled",
+        message: "Awaiting verification. No transaction statements from subsequent billing cycles have been parsed yet to confirm that charges have stopped. Please upload a newer billing statement or wait for transaction sync.",
+      });
+    }
 
     // Mark subscription status as verified_cancelled
     // Move Potential Savings directly into Confirmed Savings!
@@ -453,9 +645,9 @@ app.post("/api/subscriptions/:id/verify-cancel", requireAuth, async (req: AuthRe
       status: "verified_cancelled",
       confirmedSavings: sub.amount,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Failed to verify cancellation:", error);
-    res.status(500).json({ error: "Unable to verify cancellation." });
+    res.status(500).json({ error: error.message || "Unable to verify cancellation." });
   }
 });
 
@@ -498,6 +690,7 @@ app.post("/api/stripe/create-checkout-session", requireAuth, async (req: AuthReq
   try {
     if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
 
+    const { plan } = req.body; // "premium" or "yearly"
     const appUrl = process.env.APP_URL || `http://localhost:3000`;
     const stripe = getStripe();
 
@@ -518,30 +711,45 @@ app.post("/api/stripe/create-checkout-session", requireAuth, async (req: AuthReq
       });
     }
 
-    const session = await stripe.checkout.sessions.create({
+    const isYearly = plan === "yearly";
+    const amount = isYearly ? 39900 : 4900; // in paise (₹399 or ₹49)
+    const interval = isYearly ? "year" : "month";
+    const planName = isYearly ? "SubGuardian Yearly Shield" : "SubGuardian Premium Shield";
+    const planDescription = isYearly 
+      ? "Best value - AI + alerts + cancellation assistance" 
+      : "AI + alerts + cancellation assistance";
+
+    const sessionOptions: any = {
       payment_method_types: ["card"],
       line_items: [
         {
           price_data: {
-            currency: "usd",
+            currency: "inr",
             product_data: {
-              name: "SubGuardian Premium Shield",
-              description: "Durable Cloud PostgreSQL storage, premium automated cancellation requested logs, and automated rate negotiation outlines.",
+              name: planName,
+              description: planDescription,
             },
-            unit_amount: 499, // $4.99 USD
+            unit_amount: amount,
             recurring: {
-              interval: "month",
+              interval: interval,
             },
           },
           quantity: 1,
         },
       ],
       mode: "subscription",
-      customer_email: req.dbUser.email,
       client_reference_id: req.dbUser.id.toString(), // Secure verification tracking
       success_url: `${appUrl}?checkout_status=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${appUrl}?checkout_status=cancel`,
-    });
+    };
+
+    if (req.dbUser.stripeCustomerId) {
+      sessionOptions.customer = req.dbUser.stripeCustomerId;
+    } else {
+      sessionOptions.customer_email = req.dbUser.email;
+    }
+
+    const session = await stripe.checkout.sessions.create(sessionOptions);
 
     res.json({ id: session.id, url: session.url, isSandbox: false });
   } catch (error: any) {
@@ -551,7 +759,7 @@ app.post("/api/stripe/create-checkout-session", requireAuth, async (req: AuthReq
 });
 
 // Endpoint: Secure Stripe Webhook signature verification & state handling
-app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+app.post("/api/stripe/webhook", express.raw({ type: "*/*" }), async (req, res) => {
   const stripe = getStripe();
   const signature = req.headers["stripe-signature"];
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -580,7 +788,7 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
     const dataObject = event.data.object as any;
     const userIdStr = dataObject.client_reference_id || (dataObject.metadata && dataObject.metadata.userId);
     const stripeCustomerId = dataObject.customer;
-    const stripeSubscriptionId = dataObject.subscription;
+    const stripeSubscriptionId = dataObject.subscription || dataObject.id;
 
     console.log(`[Webhook Event] Received ${event.type} for Customer: ${stripeCustomerId}`);
 
@@ -602,14 +810,26 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
       }
       case "customer.subscription.created":
       case "customer.subscription.updated": {
+        const status = dataObject.status; // e.g. active, past_due, canceled
         if (stripeSubscriptionId) {
-          const status = dataObject.status; // e.g. active, past_due, canceled
-          await db.update(users)
+          const updated = await db.update(users)
             .set({
+              stripeSubscriptionId,
               stripeSubscriptionStatus: status,
               premium: status === "active",
             })
-            .where(eq(users.stripeSubscriptionId, stripeSubscriptionId));
+            .where(eq(users.stripeSubscriptionId, stripeSubscriptionId))
+            .returning();
+
+          if (updated.length === 0 && stripeCustomerId) {
+            await db.update(users)
+              .set({
+                stripeSubscriptionId,
+                stripeSubscriptionStatus: status,
+                premium: status === "active",
+              })
+              .where(eq(users.stripeCustomerId, stripeCustomerId));
+          }
         }
         break;
       }
@@ -624,14 +844,27 @@ app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async
         }
         break;
       }
+      case "invoice.paid": {
+        const subId = dataObject.subscription;
+        if (subId) {
+          await db.update(users)
+            .set({
+              stripeSubscriptionStatus: "active",
+              premium: true,
+            })
+            .where(eq(users.stripeSubscriptionId, subId));
+        }
+        break;
+      }
       case "invoice.payment_failed": {
-        if (stripeSubscriptionId) {
+        const subId = dataObject.subscription;
+        if (subId) {
           await db.update(users)
             .set({
               stripeSubscriptionStatus: "payment_failed",
               premium: false,
             })
-            .where(eq(users.stripeSubscriptionId, stripeSubscriptionId));
+            .where(eq(users.stripeSubscriptionId, subId));
         }
         break;
       }
@@ -670,7 +903,11 @@ async function bootstrap() {
   });
 }
 
-bootstrap().catch((err) => {
-  console.error("Failed to bootstrap server:", err);
-  process.exit(1);
-});
+if (process.env.NODE_ENV !== "test") {
+  bootstrap().catch((err) => {
+    console.error("Failed to bootstrap server:", err);
+    process.exit(1);
+  });
+}
+
+export { app, bootstrap };

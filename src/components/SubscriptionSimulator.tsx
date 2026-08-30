@@ -169,13 +169,63 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
       setActiveScript({
         provider: sub.provider,
         title: `Cancellation Request Draft for ${sub.provider}`,
-        text: data.generatedMessage,
+        text: `${data.generatedMessage}\n\n=========================================\nOFFICIAL CANCELLATION LINK: ${data.cancellationUrl}\nINSTRUCTIONS:\n${data.instructions}`,
         type: "cancel",
         subId: sub.id
       });
     } catch (err: any) {
       console.error("Cancellation request generation failed:", err);
       alert(err.message || "Failed to initiate cancellation request.");
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  // Step 1.5: Submit cancellation to provider (transitions to awaiting_confirmation)
+  const handleSubmitCancel = async (subId: number) => {
+    if (!token) return;
+    setActionLoadingId(subId);
+    try {
+      const response = await fetch(`/api/subscriptions/${subId}/submit-cancel`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to submit cancellation.");
+
+      setActiveScript(null);
+      await fetchSubscriptions();
+    } catch (err: any) {
+      console.error("Submit cancellation failed:", err);
+      alert(err.message || "Failed to submit cancellation.");
+    } finally {
+      setActionLoadingId(null);
+    }
+  };
+
+  // Step 1.75: Confirm provider accepted cancellation (transitions to cancelled)
+  const handleConfirmProviderAccepted = async (subId: number) => {
+    if (!token) return;
+    setActionLoadingId(subId);
+    try {
+      const response = await fetch(`/api/subscriptions/${subId}/confirm-provider-accepted`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to confirm provider cancellation.");
+
+      setActiveScript(null);
+      await fetchSubscriptions();
+    } catch (err: any) {
+      console.error("Confirm provider cancelled failed:", err);
+      alert(err.message || "Failed to confirm provider cancellation.");
     } finally {
       setActionLoadingId(null);
     }
@@ -195,6 +245,11 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
+
+      if (data.success === false) {
+        alert(data.message || "Awaiting verification: no newer transactions scanned yet to prove charge has stopped.");
+        return;
+      }
 
       // Clear active letter view and fetch updated state
       setActiveScript(null);
@@ -689,27 +744,30 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
             <AnimatePresence initial={false}>
               {subs.map((sub) => {
                 const isFlagged = sub.status === "flagged";
-                const isCancelled = sub.status === "verified_cancelled" || sub.status === "cancelled";
+                const isVerified = sub.status === "verified_cancelled";
+                const isCancelledOnly = sub.status === "cancelled";
                 const isRequested = sub.status === "cancellation_requested";
+                const isAwaiting = sub.status === "awaiting_confirmation";
+                const isCancelled = isVerified || isCancelledOnly;
                 const isLoading = actionLoadingId === sub.id;
 
                 return (
                   <motion.div 
-                    key={sub.id} 
-                    layout
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className={`border rounded-xl p-4 bg-white transition-all flex flex-col md:flex-row md:items-center md:justify-between gap-4 ${
-                      isCancelled ? "opacity-50 border-slate-100 bg-slate-50/50" : 
-                      isFlagged ? "border-rose-200/90 shadow-sm shadow-rose-50/50" : "border-slate-200/80 hover:border-slate-300"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm shrink-0 ${
-                        isCancelled ? "bg-slate-200 text-slate-500" :
-                        isFlagged ? "bg-rose-50 text-rose-700 border border-rose-100" : "bg-slate-100 text-slate-800"
-                      }`}>
+                     key={sub.id} 
+                     layout
+                     initial={{ opacity: 0, y: 10 }}
+                     animate={{ opacity: 1, y: 0 }}
+                     exit={{ opacity: 0, scale: 0.95 }}
+                     className={`border rounded-xl p-4 bg-white transition-all flex flex-col md:flex-row md:items-center md:justify-between gap-4 ${
+                       isVerified ? "opacity-50 border-slate-100 bg-slate-50/50" : 
+                       isFlagged ? "border-rose-200/90 shadow-sm shadow-rose-50/50" : "border-slate-200/80 hover:border-slate-300"
+                     }`}
+                   >
+                     <div className="flex items-center gap-3">
+                       <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold text-sm shrink-0 ${
+                         isVerified ? "bg-slate-200 text-slate-500" :
+                         isFlagged ? "bg-rose-50 text-rose-700 border border-rose-100" : "bg-slate-100 text-slate-800"
+                       }`}>
                         {sub.provider[0].toUpperCase()}
                       </div>
                       <div>
@@ -720,14 +778,24 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                               <AlertTriangle className="w-2.5 h-2.5" /> Idle Leak Risk
                             </span>
                           )}
-                          {isCancelled && (
+                          {isVerified && (
                             <span className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full leading-none">
                               Fully Cancelled
                             </span>
                           )}
+                          {isCancelledOnly && (
+                            <span className="bg-blue-50 border border-blue-200 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full leading-none">
+                              Provider Cancelled (Unverified)
+                            </span>
+                          )}
                           {isRequested && (
                             <span className="bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse leading-none flex items-center gap-1">
-                              <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Cancellation Sent
+                              <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Request Drafted
+                            </span>
+                          )}
+                          {isAwaiting && (
+                            <span className="bg-indigo-50 border border-indigo-200 text-indigo-800 text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse leading-none flex items-center gap-1">
+                              <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Submitted to Provider
                             </span>
                           )}
                         </div>
@@ -751,7 +819,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                       </div>
 
                       <div className="flex gap-1.5 shrink-0">
-                        {isFlagged && (
+                        {(sub.status === "active" || sub.status === "flagged") && (
                           <>
                             {sub.category === "utility" ? (
                               <button
@@ -776,20 +844,52 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                         )}
 
                         {isRequested && (
+                          <div className="flex gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveScript({
+                                  provider: sub.provider,
+                                  title: `Cancellation Instructions for ${sub.provider}`,
+                                  text: `Please submit the request below to ${sub.provider} by going to their cancel link.\n\n=========================================\nHow to submit:\n1. Copy the generated request letter.\n2. Submit it via their cancellation portal.`,
+                                  type: "cancel",
+                                  subId: sub.id
+                                });
+                              }}
+                              className="bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                            >
+                              Instructions & Copy
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSubmitCancel(sub.id)}
+                              disabled={isLoading}
+                              className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer"
+                            >
+                              I Submitted Cancellation
+                            </button>
+                          </div>
+                        )}
+
+                        {isAwaiting && (
                           <button
                             type="button"
-                            onClick={() => {
-                              setActiveScript({
-                                provider: sub.provider,
-                                title: `Awaiting Verification for ${sub.provider}`,
-                                text: `Your professional cancellation request letter was successfully generated and sent to billing.\n\nPlease log in to your ${sub.provider} account or check your bank/card statements over the next 1-2 days to confirm that recurring billing charges has stopped.\n\nOnce confirmed, verify cancellation here to update your ledger permanently.`,
-                                type: "cancel",
-                                subId: sub.id
-                              });
-                            }}
-                            className="bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                            onClick={() => handleConfirmProviderAccepted(sub.id)}
+                            disabled={isLoading}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer"
                           >
-                            Verify Cancel
+                            Provider Accepted Cancel
+                          </button>
+                        )}
+
+                        {isCancelledOnly && (
+                          <button
+                            type="button"
+                            onClick={() => handleVerifyCancellation(sub.id)}
+                            disabled={isLoading}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                          >
+                            Verify Charge Stopped
                           </button>
                         )}
                       </div>
@@ -856,19 +956,59 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                 {activeScript.text}
               </div>
 
-              {activeScript.type === "cancel" && activeScript.subId && (
-                <div className="border-t border-slate-200 pt-3 flex flex-col gap-2">
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    Check your billing statements. Once confirmed that the provider cancelled charge renewals, verify cancellation below to update your stats.
-                  </p>
-                  <button
-                    onClick={() => handleVerifyCancellation(activeScript.subId!)}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 rounded-lg shadow-sm flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                  >
-                    <CheckCircle className="w-4 h-4" /> Verify Charge Removal (Confirm Savings)
-                  </button>
-                </div>
-              )}
+              {activeScript.type === "cancel" && activeScript.subId && (() => {
+                const subObj = subs.find(s => s.id === activeScript.subId);
+                if (!subObj) return null;
+
+                return (
+                  <div className="border-t border-slate-200 pt-3 flex flex-col gap-2">
+                    {subObj.status === "cancellation_requested" && (
+                      <>
+                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                          Step 1: Copy this letter and submit it to the provider's billing department.
+                        </p>
+                        <button
+                          onClick={() => handleSubmitCancel(activeScript.subId!)}
+                          className="w-full bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold py-2 rounded-lg shadow-sm flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          I Have Submitted This Request to the Provider
+                        </button>
+                      </>
+                    )}
+                    {subObj.status === "awaiting_confirmation" && (
+                      <>
+                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                          Step 2: Wait for the provider to accept the request. Once they accept/confirm via email, confirm it here.
+                        </p>
+                        <button
+                          onClick={() => handleConfirmProviderAccepted(activeScript.subId!)}
+                          className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 rounded-lg shadow-sm flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          Provider Has Accepted Cancellation
+                        </button>
+                      </>
+                    )}
+                    {subObj.status === "cancelled" && (
+                      <>
+                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                          Step 3: Check your billing statements. Once a newer billing statement/transaction log is parsed, run verification to ensure the charge has actually stopped.
+                        </p>
+                        <button
+                          onClick={() => handleVerifyCancellation(activeScript.subId!)}
+                          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 rounded-lg shadow-sm flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <CheckCircle className="w-4 h-4" /> Run Statement Verification
+                        </button>
+                      </>
+                    )}
+                    {subObj.status === "verified_cancelled" && (
+                      <p className="text-[11px] text-emerald-600 font-semibold text-center flex items-center justify-center gap-1">
+                        <Check className="w-3.5 h-3.5" /> Cancellation fully verified! Charges have successfully stopped.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
 
               {copied && (
                 <p className="text-[11px] text-emerald-600 font-semibold text-center flex items-center justify-center gap-1">
