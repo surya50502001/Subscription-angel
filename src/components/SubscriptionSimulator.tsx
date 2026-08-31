@@ -558,6 +558,8 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
               if (!renewal.renewalReminderEnabled) return null;
               
               const isGuided = ["netflix", "spotify", "hulu", "adobe", "chatgpt"].some(k => renewal.provider.toLowerCase().includes(k));
+              const cancelTypeStr = isGuided ? "Guided cancellation" : "Manual/assisted cancellation";
+              const cancelTypeColor = isGuided ? "bg-amber-400" : "bg-slate-400";
 
               return (
                 <div key={renewal.id} className="border border-slate-200 rounded-xl p-4 bg-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -569,11 +571,9 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                     <div className="text-[10px] text-amber-600 font-semibold mt-1">
                       Renews in {renewal.daysUntilRenewal} days
                     </div>
-                    {isGuided && (
-                      <div className="text-[10px] text-slate-500 font-medium mt-1 flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Guided cancellation
-                      </div>
-                    )}
+                    <div className="text-[10px] text-slate-500 font-medium mt-1 flex items-center gap-1">
+                      <span className={`w-1.5 h-1.5 rounded-full ${cancelTypeColor}`}></span> {cancelTypeStr}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <button

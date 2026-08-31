@@ -4,10 +4,11 @@ import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import Stripe from "stripe";
 import { db } from "./src/db/index.ts";
-import { users, subscriptions, transactions, cancellationRequests, savingsEvents } from "./src/db/schema.ts";
+import { users, subscriptions, transactions, cancellationRequests, savingsEvents, renewalReminders } from "./src/db/schema.ts";
 import { eq, and } from "drizzle-orm";
 import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { calculateNextRenewal } from "./src/lib/renewal.ts";
+import { NotificationService } from "./src/lib/notifications.ts";
 
 dotenv.config();
 
@@ -186,10 +187,22 @@ app.get("/api/subscriptions/upcoming", requireAuth, async (req: AuthRequest, res
 
     const now = new Date();
     const upcoming = userSubs
-      .filter(sub => sub.nextRenewalDate !== null)
       .map(sub => {
-        const renewalDate = new Date(sub.nextRenewalDate!);
-        const diffTime = Math.abs(renewalDate.getTime() - now.getTime());
+        let renewalDate = sub.nextRenewalDate ? new Date(sub.nextRenewalDate) : null;
+        
+        // If renewalDate is missing or in the past, recalculate
+        if (!renewalDate || renewalDate <= now) {
+          const calc = calculateNextRenewal(sub.nextRenewalDate ? new Date(sub.nextRenewalDate).toISOString() : sub.lastTransactionDate, sub.frequency);
+          if (calc) {
+            renewalDate = calc;
+            // Optionally could update DB here, but we just compute for UI correctness
+          }
+        }
+        return { sub, renewalDate };
+      })
+      .filter(({ renewalDate }) => renewalDate !== null && renewalDate > now)
+      .map(({ sub, renewalDate }) => {
+        const diffTime = renewalDate!.getTime() - now.getTime();
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
         return {
           id: sub.id,
@@ -198,14 +211,14 @@ app.get("/api/subscriptions/upcoming", requireAuth, async (req: AuthRequest, res
           amount: sub.renewalAmount || sub.amount,
           currency: sub.currency,
           frequency: sub.frequency,
-          nextRenewalDate: sub.nextRenewalDate,
+          nextRenewalDate: renewalDate!.toISOString(),
           daysUntilRenewal: diffDays,
           status: sub.status,
           potentialSavings: sub.potentialSavings,
           renewalReminderEnabled: sub.renewalReminderEnabled,
         };
       })
-      .sort((a, b) => new Date(a.nextRenewalDate!).getTime() - new Date(b.nextRenewalDate!).getTime());
+      .sort((a, b) => new Date(a.nextRenewalDate).getTime() - new Date(b.nextRenewalDate).getTime());
 
     res.json({ upcoming });
   } catch (error) {
@@ -441,9 +454,15 @@ app.put("/api/subscriptions/:id/reminder", requireAuth, async (req: AuthRequest,
 });
 
 // Endpoint: Cron job to process reminders (mock email sending)
-// In a real app this would be triggered by a worker or Cloud Scheduler and authenticated via service account
 app.post("/api/cron/reminders", async (req, res) => {
   try {
+    const authHeader = req.headers.authorization;
+    if (process.env.NODE_ENV === 'production') {
+      if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+        return res.status(401).json({ error: "Unauthorized cron request." });
+      }
+    }
+
     const activeSubs = await db.select()
       .from(subscriptions)
       .where(eq(subscriptions.status, 'active'));
@@ -455,22 +474,49 @@ app.post("/api/cron/reminders", async (req, res) => {
       if (!sub.renewalReminderEnabled || !sub.nextRenewalDate) continue;
 
       const renewalDate = new Date(sub.nextRenewalDate);
-      // diff in days
       const diffTime = renewalDate.getTime() - now.getTime();
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
       // Remind at 7, 3, 1 days before
       if (diffDays === 7 || diffDays === 3 || diffDays === 1) {
-        // Prevent duplicate reminders on the same day
-        const lastSent = sub.lastReminderSentAt ? new Date(sub.lastReminderSentAt) : null;
-        if (!lastSent || lastSent.toDateString() !== now.toDateString()) {
-          console.log(`[Reminder Service] Sending reminder to user ${sub.userId} for ${sub.name} renewing in ${diffDays} days.`);
-          
-          await db.update(subscriptions)
-            .set({ lastReminderSentAt: now })
-            .where(eq(subscriptions.id, sub.id));
+        // Prevent duplicate reminders using the new renewalReminders table
+        const existingReminders = await db.select()
+          .from(renewalReminders)
+          .where(and(
+            eq(renewalReminders.subscriptionId, sub.id),
+            eq(renewalReminders.daysThreshold, diffDays)
+          ));
+
+        // Only send if we haven't already sent for this specific threshold for this specific date
+        // Since the cron runs daily, we just check if any record exists for this threshold
+        // and matching the exact renewal date.
+        const alreadySent = existingReminders.some(r => new Date(r.renewalDate).getTime() === renewalDate.getTime());
+
+        if (!alreadySent) {
+          const userRecords = await db.select().from(users).where(eq(users.id, sub.userId));
+          if (userRecords.length > 0) {
+            await NotificationService.sendRenewalReminder(
+              userRecords[0].email, 
+              sub.name, 
+              diffDays, 
+              sub.renewalAmount || sub.amount, 
+              sub.currency
+            );
             
-          remindersSent++;
+            await db.insert(renewalReminders).values({
+              userId: sub.userId,
+              subscriptionId: sub.id,
+              renewalDate: renewalDate,
+              daysThreshold: diffDays,
+              sentAt: now,
+            });
+
+            await db.update(subscriptions)
+              .set({ lastReminderSentAt: now })
+              .where(eq(subscriptions.id, sub.id));
+              
+            remindersSent++;
+          }
         }
       }
     }
@@ -1069,7 +1115,7 @@ async function bootstrap() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
   });
 }
 

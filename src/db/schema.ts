@@ -87,12 +87,23 @@ export const savingsEvents = pgTable('savings_events', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+// Renewal Reminders table to prevent duplicate notifications
+export const renewalReminders = pgTable('renewal_reminders', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id).notNull(),
+  subscriptionId: integer('subscription_id').references(() => subscriptions.id).notNull(),
+  renewalDate: timestamp('renewal_date').notNull(),
+  daysThreshold: integer('days_threshold').notNull(),
+  sentAt: timestamp('sent_at').defaultNow(),
+});
+
 // Defining relations for type-safe queries and joins
 export const usersRelations = relations(users, ({ many }) => ({
   subscriptions: many(subscriptions),
   transactions: many(transactions),
   cancellationRequests: many(cancellationRequests),
   savingsEvents: many(savingsEvents),
+  renewalReminders: many(renewalReminders),
 }));
 
 export const subscriptionsRelations = relations(subscriptions, ({ one, many }) => ({
@@ -102,6 +113,7 @@ export const subscriptionsRelations = relations(subscriptions, ({ one, many }) =
   }),
   cancellationRequests: many(cancellationRequests),
   savingsEvents: many(savingsEvents),
+  renewalReminders: many(renewalReminders),
 }));
 
 export const transactionsRelations = relations(transactions, ({ one }) => ({

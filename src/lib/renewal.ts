@@ -7,7 +7,7 @@ export function calculateNextRenewal(lastDateStr: string | null | undefined, fre
   let nextDate = new Date(lastDate);
 
   const freq = (frequency || "").toLowerCase();
-  if (freq !== "monthly" && freq !== "annual" && freq !== "annually" && freq !== "yearly") {
+  if (freq !== "monthly" && freq !== "annual" && freq !== "annually" && freq !== "yearly" && freq !== "weekly") {
     return null;
   }
 
@@ -21,6 +21,8 @@ export function calculateNextRenewal(lastDateStr: string | null | undefined, fre
       nextDate.setMonth(nextDate.getMonth() + 1);
     } else if (freq === "annual" || freq === "annually" || freq === "yearly") {
       nextDate.setFullYear(nextDate.getFullYear() + 1);
+    } else if (freq === "weekly") {
+      nextDate.setDate(nextDate.getDate() + 7);
     }
   }
   return nextDate;
