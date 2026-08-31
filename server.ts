@@ -7,11 +7,33 @@ import { db } from "./src/db/index.ts";
 import { users, subscriptions, transactions, cancellationRequests, savingsEvents } from "./src/db/schema.ts";
 import { eq, and } from "drizzle-orm";
 import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
+import { calculateNextRenewal } from "./src/lib/renewal.ts";
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+
+// Zero-dependency CORS middleware setup
+app.use((req, res, next) => {
+  const allowedOrigin = process.env.FRONTEND_URL;
+  if (allowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  } else {
+    if (process.env.NODE_ENV !== "production") {
+      res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+    }
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+  
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // Setup raw parsing for stripe webhook to preserve raw headers correctly
 app.use((req, res, next) => {
@@ -150,6 +172,48 @@ app.get("/api/subscriptions", requireAuth, async (req: AuthRequest, res) => {
   }
 });
 
+// Endpoint: Fetch upcoming renewals
+app.get("/api/subscriptions/upcoming", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+
+    const userSubs = await db.select()
+      .from(subscriptions)
+      .where(and(
+        eq(subscriptions.userId, req.dbUser.id),
+        eq(subscriptions.status, 'active') // Only show active subs for upcoming renewals
+      ));
+
+    const now = new Date();
+    const upcoming = userSubs
+      .filter(sub => sub.nextRenewalDate !== null)
+      .map(sub => {
+        const renewalDate = new Date(sub.nextRenewalDate!);
+        const diffTime = Math.abs(renewalDate.getTime() - now.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+        return {
+          id: sub.id,
+          provider: sub.provider,
+          name: sub.name,
+          amount: sub.renewalAmount || sub.amount,
+          currency: sub.currency,
+          frequency: sub.frequency,
+          nextRenewalDate: sub.nextRenewalDate,
+          daysUntilRenewal: diffDays,
+          status: sub.status,
+          potentialSavings: sub.potentialSavings,
+          renewalReminderEnabled: sub.renewalReminderEnabled,
+        };
+      })
+      .sort((a, b) => new Date(a.nextRenewalDate!).getTime() - new Date(b.nextRenewalDate!).getTime());
+
+    res.json({ upcoming });
+  } catch (error) {
+    console.error("Failed to query upcoming renewals:", error);
+    res.status(500).json({ error: "Unable to retrieve upcoming renewals." });
+  }
+});
+
 // Endpoint: Save a newly parsed / manually added subscription
 app.post("/api/subscriptions", requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -160,6 +224,8 @@ app.post("/api/subscriptions", requireAuth, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: "Provider, name, and amount are required." });
     }
 
+    const nextRenewal = calculateNextRenewal(lastTransactionDate || null, frequency || "monthly");
+    
     const newSub = await db.insert(subscriptions)
       .values({
         userId: req.dbUser.id,
@@ -171,6 +237,9 @@ app.post("/api/subscriptions", requireAuth, async (req: AuthRequest, res) => {
         frequency: frequency || "monthly",
         lastTransactionDate: lastTransactionDate || null,
         status: status || "active",
+        nextRenewalDate: nextRenewal,
+        renewalAmount: parseFloat(amount),
+        renewalReminderEnabled: true,
         potentialSavings: parseFloat(amount),
         confirmedSavings: 0,
       })
@@ -276,6 +345,7 @@ Statement Text:
     const savedSubscriptions = [];
 
     for (const item of parsedList) {
+      const nextRenewal = calculateNextRenewal(item.date || null, item.frequency || "monthly");
       // Map to PostgreSQL subscription fields
       const inserted = await db.insert(subscriptions)
         .values({
@@ -288,6 +358,9 @@ Statement Text:
           frequency: item.frequency || "monthly",
           lastTransactionDate: item.date || null,
           status: "flagged", // mark as flagged leak for review
+          nextRenewalDate: nextRenewal,
+          renewalAmount: parseFloat(item.amount) || 0,
+          renewalReminderEnabled: true,
           potentialSavings: parseFloat(item.estimatedSavings) || parseFloat(item.amount) || 0,
           confirmedSavings: 0,
         })
@@ -335,6 +408,77 @@ Statement Text:
   } catch (error: any) {
     console.error("Statement analysis failed:", error);
     res.status(500).json({ error: error.message || "Unable to parse statements securely." });
+  }
+});
+
+// Endpoint: Toggle renewal reminder
+app.put("/api/subscriptions/:id/reminder", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const subId = parseInt(req.params.id);
+    const { enabled } = req.body;
+
+    const subList = await db.select()
+      .from(subscriptions)
+      .where(and(eq(subscriptions.id, subId), eq(subscriptions.userId, req.dbUser.id)));
+
+    if (subList.length === 0) {
+      return res.status(404).json({ error: "Subscription not found." });
+    }
+
+    await db.update(subscriptions)
+      .set({
+        renewalReminderEnabled: enabled,
+        updatedAt: new Date(),
+      })
+      .where(eq(subscriptions.id, subId));
+
+    res.json({ success: true, enabled });
+  } catch (error) {
+    console.error("Failed to toggle reminder:", error);
+    res.status(500).json({ error: "Unable to toggle reminder." });
+  }
+});
+
+// Endpoint: Cron job to process reminders (mock email sending)
+// In a real app this would be triggered by a worker or Cloud Scheduler and authenticated via service account
+app.post("/api/cron/reminders", async (req, res) => {
+  try {
+    const activeSubs = await db.select()
+      .from(subscriptions)
+      .where(eq(subscriptions.status, 'active'));
+      
+    const now = new Date();
+    let remindersSent = 0;
+
+    for (const sub of activeSubs) {
+      if (!sub.renewalReminderEnabled || !sub.nextRenewalDate) continue;
+
+      const renewalDate = new Date(sub.nextRenewalDate);
+      // diff in days
+      const diffTime = renewalDate.getTime() - now.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+      // Remind at 7, 3, 1 days before
+      if (diffDays === 7 || diffDays === 3 || diffDays === 1) {
+        // Prevent duplicate reminders on the same day
+        const lastSent = sub.lastReminderSentAt ? new Date(sub.lastReminderSentAt) : null;
+        if (!lastSent || lastSent.toDateString() !== now.toDateString()) {
+          console.log(`[Reminder Service] Sending reminder to user ${sub.userId} for ${sub.name} renewing in ${diffDays} days.`);
+          
+          await db.update(subscriptions)
+            .set({ lastReminderSentAt: now })
+            .where(eq(subscriptions.id, sub.id));
+            
+          remindersSent++;
+        }
+      }
+    }
+
+    res.json({ success: true, remindersSent });
+  } catch (error) {
+    console.error("Cron failed:", error);
+    res.status(500).json({ error: "Cron processing failed." });
   }
 });
 
@@ -774,17 +918,24 @@ app.post("/api/stripe/webhook", express.raw({ type: "*/*" }), async (req, res) =
   let event: Stripe.Event;
 
   try {
-    if (signature && secret) {
-      event = stripe.webhooks.constructEvent(req.body, signature, secret);
-    } else if (process.env.NODE_ENV !== "production" || !secret) {
+    const isLocalDevOrTest = (process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test" || process.env.VITEST) && !secret;
+
+    if (isLocalDevOrTest) {
       // Secure bypass for development/testing when webhook secret is not set or signature is missing
       console.warn("[Stripe Webhook] Warning: STRIPE_WEBHOOK_SECRET is not configured or signature is missing. Processing event directly as JSON in dev/test mode.");
       const bodyStr = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : req.body;
       event = typeof bodyStr === "string" ? JSON.parse(bodyStr) : bodyStr;
     } else {
-      // Reject unsigned payloads in production to prevent malicious updates
-      console.error("[Stripe Webhook] Unsigned payloads rejected.");
-      return res.status(400).json({ error: "Missing webhook signature verification." });
+      // Production mode / Standard mode: Signature and secret are MANDATORY
+      if (!secret) {
+        console.error("[Stripe Webhook] Error: STRIPE_WEBHOOK_SECRET must be configured in production environments.");
+        return res.status(400).json({ error: "STRIPE_WEBHOOK_SECRET is required in production." });
+      }
+      if (!signature) {
+        console.error("[Stripe Webhook] Error: Missing stripe-signature header.");
+        return res.status(400).json({ error: "Missing webhook signature verification." });
+      }
+      event = stripe.webhooks.constructEvent(req.body, signature, secret);
     }
   } catch (err: any) {
     console.error("[Stripe Webhook] Signature verification failed:", err.message);

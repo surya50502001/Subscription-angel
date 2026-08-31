@@ -29,6 +29,10 @@ export const subscriptions = pgTable('subscriptions', {
   lastTransactionDate: text('last_transaction_date'),
   // Status: active, flagged, cancellation_requested, awaiting_confirmation, cancelled, verified_cancelled
   status: text('status').notNull().default('active'),
+  nextRenewalDate: timestamp('next_renewal_date'),
+  renewalAmount: doublePrecision('renewal_amount'),
+  renewalReminderEnabled: boolean('renewal_reminder_enabled').default(true),
+  lastReminderSentAt: timestamp('last_reminder_sent_at'),
   potentialSavings: doublePrecision('potential_savings').notNull().default(0),
   confirmedSavings: doublePrecision('confirmed_savings').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow(),

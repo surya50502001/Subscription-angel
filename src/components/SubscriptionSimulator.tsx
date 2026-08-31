@@ -29,6 +29,7 @@ export const SubscriptionSimulator: React.FC = () => {
   const [premiumStatus, setPremiumStatus] = useState("none");
   const [stripeLoading, setStripeLoading] = useState(false);
   const [loadingSubs, setLoadingSubs] = useState(false);
+  const [upcomingRenewals, setUpcomingRenewals] = useState<any[]>([]);
 
   // Active script generator details
   const [activeScript, setActiveScript] = useState<{
@@ -100,6 +101,15 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
       if (subsRes.ok) {
         const subsData = await subsRes.json();
         setSubs(subsData.subscriptions || []);
+      }
+
+      // 3. Fetch upcoming renewals
+      const upcomingRes = await fetch("/api/subscriptions/upcoming", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (upcomingRes.ok) {
+        const upcomingData = await upcomingRes.json();
+        setUpcomingRenewals(upcomingData.upcoming || []);
       }
     } catch (err) {
       console.error("Failed to sync subscriptions ledger from backend:", err);
@@ -533,6 +543,75 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
           >
             {stripeLoading ? "Processing..." : "Upgrade with Stripe"} <ArrowRight className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* Upcoming Renewals */}
+      {upcomingRenewals.length > 0 && (
+        <div className="bg-white border border-slate-200/80 rounded-xl p-5 shadow-sm space-y-4">
+          <div className="flex items-center gap-2 mb-2">
+            <AlertTriangle className="w-4 h-4 text-amber-500" />
+            <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Upcoming Renewals</h4>
+          </div>
+          <div className="space-y-3">
+            {upcomingRenewals.map((renewal) => {
+              if (!renewal.renewalReminderEnabled) return null;
+              
+              const isGuided = ["netflix", "spotify", "hulu", "adobe", "chatgpt"].some(k => renewal.provider.toLowerCase().includes(k));
+
+              return (
+                <div key={renewal.id} className="border border-slate-200 rounded-xl p-4 bg-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div>
+                    <h5 className="font-bold text-slate-950 text-sm">{renewal.provider}</h5>
+                    <div className="text-xs text-slate-600 mt-0.5">
+                      {formatCurrency(renewal.amount, renewal.currency)} / {renewal.frequency.replace("ly", "")}
+                    </div>
+                    <div className="text-[10px] text-amber-600 font-semibold mt-1">
+                      Renews in {renewal.daysUntilRenewal} days
+                    </div>
+                    {isGuided && (
+                      <div className="text-[10px] text-slate-500 font-medium mt-1 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span> Guided cancellation
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={async () => {
+                        if (!token) return;
+                        try {
+                          await fetch(`/api/subscriptions/${renewal.id}/reminder`, {
+                            method: "PUT",
+                            headers: { 
+                              "Content-Type": "application/json",
+                              "Authorization": `Bearer ${token}`
+                            },
+                            body: JSON.stringify({ enabled: false })
+                          });
+                          setUpcomingRenewals(prev => prev.filter(s => s.id !== renewal.id));
+                        } catch (err) {
+                          console.error(err);
+                        }
+                      }}
+                      className="text-xs font-bold bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Keep
+                    </button>
+                    <button
+                      onClick={() => {
+                        // find matching sub and use existing logic
+                        const matchingSub = subs.find(s => s.id === renewal.id);
+                        if (matchingSub) handleCancelRequest(matchingSub);
+                      }}
+                      className="text-xs font-bold bg-rose-500 hover:bg-rose-600 text-white px-4 py-2 rounded-lg shadow-sm transition-colors cursor-pointer"
+                    >
+                      Cancel Before Renewal
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
