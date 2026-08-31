@@ -243,4 +243,84 @@ describe("Renewal Logic Tests", () => {
     
     process.env.NODE_ENV = 'test';
   });
+
+  describe("SubGuardian Platform Cancellation & Capability Tests", () => {
+    it("16. Provider Registry mapping (Guided vs Automatic)", async () => {
+      const { getProvider } = await import("../lib/providers.ts");
+      const netflix = getProvider("Netflix");
+      expect(netflix.cancellationMode).toBe("guided");
+      expect(netflix.apiAvailable).toBe(false);
+
+      const sandbox = getProvider("SubGuardian Sandbox");
+      expect(sandbox.cancellationMode).toBe("automatic");
+      expect(sandbox.apiAvailable).toBe(true);
+    });
+
+    it("17. Prevent unauthorized cancellation requests across users", async () => {
+      // User is logged in as ID 1, but subscription belongs to ID 999
+      const mockSelectUser = vi.fn().mockReturnValue([{ id: 1, uid: "test-uid-123", email: "test@test.com", name: "Test" }]);
+      const mockSelectSubEmpty = vi.fn().mockReturnValue([]); // No matching sub for ID 1
+
+      (db.select as any)
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(mockSelectUser()),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(mockSelectSubEmpty()),
+        }));
+
+      const res = await request(app)
+        .post("/api/subscriptions/999/request-cancel")
+        .set("Authorization", "Bearer fake-token")
+        .send({ reason: "Malicious Request" });
+
+      expect(res.status).toBe(404);
+      expect(res.body.error).toContain("Subscription record not found.");
+    });
+
+    it("18. Automated Sandbox Provider triggers successful automatic cancellation", async () => {
+      const mockSelectUser = vi.fn().mockReturnValue([{ id: 1, uid: "test-uid-123", email: "test@test.com", name: "Test" }]);
+      const mockSelectSub = vi.fn().mockReturnValue([{
+        id: 42,
+        provider: "subguardian_sandbox",
+        name: "Sandbox Auto Premium Plan",
+        amount: 29.99,
+        currency: "USD",
+        frequency: "monthly",
+        status: "active",
+        userId: 1
+      }]);
+
+      (db.select as any)
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(mockSelectUser()),
+        }))
+        .mockImplementationOnce(() => ({
+          from: vi.fn().mockReturnThis(),
+          where: vi.fn().mockReturnValue(mockSelectSub()),
+        }));
+
+      (db.update as any).mockImplementation(() => ({
+        set: vi.fn().mockReturnThis(),
+        where: vi.fn().mockResolvedValue(true),
+      }));
+
+      (db.insert as any).mockImplementation(() => ({
+        values: vi.fn().mockResolvedValue(true),
+      }));
+
+      const res = await request(app)
+        .post("/api/subscriptions/42/request-cancel")
+        .set("Authorization", "Bearer fake-token")
+        .send({ reason: "Sandbox testing" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.cancellationMode).toBe("automatic");
+      expect(res.body.status).toBe("cancelled");
+      expect(res.body.generatedMessage).toContain("successful via API");
+    });
+  });
 });

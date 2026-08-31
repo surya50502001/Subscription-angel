@@ -9,6 +9,8 @@ import { eq, and } from "drizzle-orm";
 import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { calculateNextRenewal } from "./src/lib/renewal.ts";
 import { NotificationService } from "./src/lib/notifications.ts";
+import { getProvider } from "./src/lib/providers.ts";
+import { CancellationService } from "./src/lib/cancellationService.ts";
 
 dotenv.config();
 
@@ -574,80 +576,13 @@ app.post("/api/subscriptions/:id/request-cancel", requireAuth, async (req: AuthR
     const subId = parseInt(req.params.id);
     const { reason } = req.body;
 
-    const subList = await db.select()
-      .from(subscriptions)
-      .where(and(eq(subscriptions.id, subId), eq(subscriptions.userId, req.dbUser.id)));
+    const result = await CancellationService.requestCancellation(req.dbUser, subId, reason);
 
-    if (subList.length === 0) {
-      return res.status(404).json({ error: "Subscription record not found." });
-    }
-
-    const sub = subList[0];
-    const customReason = reason || "I forgot to cancel during the trial period and have not actively utilized the service.";
-
-    if (!ai) {
-      return res.status(503).json({ error: "Gemini API key is not configured." });
-    }
-
-    const prompt = `Draft a highly professional cancellation/refund request message to the customer support team of ${sub.provider}.
-Details:
-- Subscription: ${sub.name}
-- Pricing Rate: ${sub.currency} ${sub.amount} (${sub.frequency})
-- User profile: Name is ${req.dbUser.name || "Customer"}, Email is ${req.dbUser.email}
-- Reason for request: "${customReason}"
-
-Generate a clear request, highlighting consumer concerns regarding unintended auto-renewals. Ensure you do not declare or guarantee that any refund is legally guaranteed. Keep it completely precise and polite.`;
-
-    const response = await generateContentWithFallback({
-      contents: prompt,
-      systemInstruction: "You are a professional assistant who drafts clean, clear, and highly professional cancellation and refund letters."
-    });
-
-    const generatedMessage = response.text || "";
-
-    const providerKey = sub.provider.toLowerCase();
-    let assistance = PROVIDER_ASSISTANCE[providerKey];
-    if (!assistance) {
-      const matchingKey = Object.keys(PROVIDER_ASSISTANCE).find(key => providerKey.includes(key));
-      assistance = matchingKey ? PROVIDER_ASSISTANCE[matchingKey] : PROVIDER_ASSISTANCE.default;
-    }
-
-    const cancellationUrl = assistance.url.startsWith("https://www.google.com")
-      ? `${assistance.url}${encodeURIComponent(sub.provider)}+subscription`
-      : assistance.url;
-
-    // 1. Update the subscription status securely inside the database to 'cancellation_requested' (NOT 'cancelled')
-    await db.update(subscriptions)
-      .set({
-        status: "cancellation_requested",
-        updatedAt: new Date(),
-      })
-      .where(eq(subscriptions.id, sub.id));
-
-    // 2. Track the request record inside the cancellation_requests table
-    await db.insert(cancellationRequests)
-      .values({
-        userId: req.dbUser.id,
-        subscriptionId: sub.id,
-        status: "sent",
-        provider: sub.provider,
-        cancellationUrl: cancellationUrl,
-        generatedMessage: generatedMessage,
-      });
-
-    res.json({
-      status: "cancellation_requested",
-      provider: sub.provider,
-      subscriptionName: sub.name,
-      amount: sub.amount,
-      currency: sub.currency,
-      cancellationUrl: cancellationUrl,
-      generatedMessage: generatedMessage,
-      instructions: assistance.instructions,
-    });
+    res.json(result);
   } catch (error: any) {
     console.error("Cancellation generation failed:", error);
-    res.status(500).json({ error: error.message || "Failed to generate cancellation blueprint." });
+    const status = error.message === "Subscription record not found." ? 404 : 500;
+    res.status(status).json({ error: error.message || "Failed to generate cancellation blueprint." });
   }
 });
 

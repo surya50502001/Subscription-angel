@@ -21,6 +21,7 @@ import {
 import { useAuth } from "../context/AuthContext.tsx";
 import { SubscriptionItem } from "../types.ts";
 import { motion, AnimatePresence } from "motion/react";
+import { getProvider } from "../lib/providers.ts";
 
 export const SubscriptionSimulator: React.FC = () => {
   const { user, token, loginWithGoogle, logout } = useAuth();
@@ -557,9 +558,17 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
             {upcomingRenewals.map((renewal) => {
               if (!renewal.renewalReminderEnabled) return null;
               
-              const isGuided = ["netflix", "spotify", "hulu", "adobe", "chatgpt"].some(k => renewal.provider.toLowerCase().includes(k));
-              const cancelTypeStr = isGuided ? "Guided cancellation" : "Manual/assisted cancellation";
-              const cancelTypeColor = isGuided ? "bg-amber-400" : "bg-slate-400";
+              const provConfig = getProvider(renewal.provider);
+              const cancelMode = provConfig.cancellationMode;
+              const cancelTypeStr = 
+                cancelMode === "automatic" ? "Automatic cancellation" :
+                cancelMode === "assisted" ? "Assisted cancellation" : "Guided cancellation";
+              const cancelTypeColor = 
+                cancelMode === "automatic" ? "bg-emerald-500" :
+                cancelMode === "assisted" ? "bg-amber-500" : "bg-blue-500";
+              const btnLabel = 
+                cancelMode === "automatic" ? "Cancel Automatically" :
+                cancelMode === "assisted" ? "Start Cancellation" : "Open Cancellation Instructions";
 
               return (
                 <div key={renewal.id} className="border border-slate-200 rounded-xl p-4 bg-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -571,8 +580,8 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                     <div className="text-[10px] text-amber-600 font-semibold mt-1">
                       Renews in {renewal.daysUntilRenewal} days
                     </div>
-                    <div className="text-[10px] text-slate-500 font-medium mt-1 flex items-center gap-1">
-                      <span className={`w-1.5 h-1.5 rounded-full ${cancelTypeColor}`}></span> {cancelTypeStr}
+                    <div className="text-[10px] text-slate-500 font-medium mt-1 flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${cancelTypeColor}`}></span> {cancelTypeStr}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -605,7 +614,7 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                       }}
                       className="text-xs font-bold bg-rose-500 hover:bg-rose-600 text-white px-4 py-2 rounded-lg shadow-sm transition-colors cursor-pointer"
                     >
-                      Cancel Before Renewal
+                      {btnLabel}
                     </button>
                   </div>
                 </div>
@@ -909,16 +918,22 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                               >
                                 <Sparkles className="w-3.5 h-3.5" /> Reduce Rate
                               </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => handleCancelRequest(sub)}
-                                disabled={isLoading}
-                                className="bg-rose-500 hover:bg-rose-600 disabled:opacity-50 text-white font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" /> Stop Leak
-                              </button>
-                            )}
+                            ) : (() => {
+                              const provConfig = getProvider(sub.provider);
+                              const actionLabel = 
+                                provConfig.cancellationMode === "automatic" ? "Cancel Automatically" :
+                                provConfig.cancellationMode === "assisted" ? "Start Cancellation" : "Open Cancellation Instructions";
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCancelRequest(sub)}
+                                  disabled={isLoading}
+                                  className="bg-rose-500 hover:bg-rose-600 disabled:opacity-50 text-white font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" /> {actionLabel}
+                                </button>
+                              );
+                            })()}
                           </>
                         )}
 
