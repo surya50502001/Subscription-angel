@@ -35,6 +35,43 @@ export const subscriptions = pgTable('subscriptions', {
   lastReminderSentAt: timestamp('last_reminder_sent_at'),
   potentialSavings: doublePrecision('potential_savings').notNull().default(0),
   confirmedSavings: doublePrecision('confirmed_savings').notNull().default(0),
+  virtualCardId: integer('virtual_card_id')
+    .references(() => virtualCards.id),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Virtual Cards table
+export const virtualCards = pgTable('virtual_cards', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id')
+    .references(() => users.id)
+    .notNull(),
+  providerId: text('provider_id').notNull(), // 'subguardian_sandbox' etc.
+  externalCardId: text('external_card_id').notNull(),
+  status: text('status').notNull().default('active'), // 'pending', 'active', 'frozen', 'terminated', 'failed'
+  last4: text('last_4').notNull(),
+  brand: text('brand').notNull().default('Visa'),
+  currency: text('currency').notNull().default('USD'),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Card Transactions table
+export const cardTransactions = pgTable('card_transactions', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id')
+    .references(() => users.id)
+    .notNull(),
+  virtualCardId: integer('virtual_card_id')
+    .references(() => virtualCards.id)
+    .notNull(),
+  externalTransactionId: text('external_transaction_id').notNull().unique(),
+  amount: doublePrecision('amount').notNull(),
+  currency: text('currency').notNull().default('USD'),
+  status: text('status').notNull(), // 'approved', 'declined'
+  merchant: text('merchant').notNull(),
+  declineReason: text('decline_reason'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
@@ -104,12 +141,18 @@ export const usersRelations = relations(users, ({ many }) => ({
   cancellationRequests: many(cancellationRequests),
   savingsEvents: many(savingsEvents),
   renewalReminders: many(renewalReminders),
+  virtualCards: many(virtualCards),
+  cardTransactions: many(cardTransactions),
 }));
 
 export const subscriptionsRelations = relations(subscriptions, ({ one, many }) => ({
   user: one(users, {
     fields: [subscriptions.userId],
     references: [users.id],
+  }),
+  virtualCard: one(virtualCards, {
+    fields: [subscriptions.virtualCardId],
+    references: [virtualCards.id],
   }),
   cancellationRequests: many(cancellationRequests),
   savingsEvents: many(savingsEvents),
@@ -142,5 +185,25 @@ export const savingsEventsRelations = relations(savingsEvents, ({ one }) => ({
   subscription: one(subscriptions, {
     fields: [savingsEvents.subscriptionId],
     references: [subscriptions.id],
+  }),
+}));
+
+export const virtualCardsRelations = relations(virtualCards, ({ one, many }) => ({
+  user: one(users, {
+    fields: [virtualCards.userId],
+    references: [users.id],
+  }),
+  subscriptions: many(subscriptions),
+  cardTransactions: many(cardTransactions),
+}));
+
+export const cardTransactionsRelations = relations(cardTransactions, ({ one }) => ({
+  user: one(users, {
+    fields: [cardTransactions.userId],
+    references: [users.id],
+  }),
+  virtualCard: one(virtualCards, {
+    fields: [cardTransactions.virtualCardId],
+    references: [virtualCards.id],
   }),
 }));

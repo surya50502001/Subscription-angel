@@ -19,13 +19,17 @@ import {
   Loader2 
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.tsx";
-import { SubscriptionItem } from "../types.ts";
+import { SubscriptionItem, VirtualCard } from "../types.ts";
 import { motion, AnimatePresence } from "motion/react";
 import { getProvider } from "../lib/providers.ts";
+import { CreditCard, Shield, Lock, Eye, EyeOff, CheckCircle2, XCircle } from "lucide-react";
 
 export const SubscriptionSimulator: React.FC = () => {
   const { user, token, loginWithGoogle, logout } = useAuth();
   const [subs, setSubs] = useState<SubscriptionItem[]>([]);
+  const [cards, setCards] = useState<VirtualCard[]>([]);
+  const [loadingCards, setLoadingCards] = useState(false);
+  const [linkingSubId, setLinkingSubId] = useState<number | null>(null);
   const [isPremium, setIsPremium] = useState(false);
   const [premiumStatus, setPremiumStatus] = useState("none");
   const [stripeLoading, setStripeLoading] = useState(false);
@@ -55,6 +59,12 @@ export const SubscriptionSimulator: React.FC = () => {
   const [newCurrency, setNewCurrency] = useState<string>("USD");
   const [newUsage, setNewUsage] = useState("Idle");
   const [isFlagged, setIsFlagged] = useState(true);
+
+  // Card charge simulation states
+  const [simulatingCardId, setSimulatingCardId] = useState<number | null>(null);
+  const [simMerchant, setSimMerchant] = useState("");
+  const [simAmount, setSimAmount] = useState("");
+  const [simResult, setSimResult] = useState<any>(null);
 
   // Loading indicator for operations
   const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
@@ -119,14 +129,164 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
     }
   };
 
+  const fetchCards = async () => {
+    if (!token) return;
+    setLoadingCards(true);
+    try {
+      const res = await fetch("/api/cards", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCards(data.cards || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch virtual cards:", err);
+    } finally {
+      setLoadingCards(false);
+    }
+  };
+
   useEffect(() => {
     if (user && token) {
       fetchSubscriptions();
+      fetchCards();
     } else {
       setSubs([]);
+      setCards([]);
       setIsPremium(false);
     }
   }, [user, token]);
+
+  const handleCreateCard = async (brand: string = "Visa", currency: string = "USD") => {
+    if (!token) return;
+    try {
+      const res = await fetch("/api/cards", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ brand, currency })
+      });
+      if (res.ok) {
+        await fetchCards();
+      } else {
+        const errData = await res.json();
+        alert(errData.error || "Failed to create card.");
+      }
+    } catch (err) {
+      console.error("Error creating card:", err);
+    }
+  };
+
+  const handleFreezeCard = async (cardId: number) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/cards/${cardId}/freeze`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.ok) {
+        await fetchCards();
+      } else {
+        const errData = await res.json();
+        alert(errData.error || "Failed to freeze card.");
+      }
+    } catch (err) {
+      console.error("Error freezing card:", err);
+    }
+  };
+
+  const handleUnfreezeCard = async (cardId: number) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/cards/${cardId}/unfreeze`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.ok) {
+        await fetchCards();
+      } else {
+        const errData = await res.json();
+        alert(errData.error || "Failed to unfreeze card.");
+      }
+    } catch (err) {
+      console.error("Error unfreezing card:", err);
+    }
+  };
+
+  const handleTerminateCard = async (cardId: number) => {
+    if (!token) return;
+    if (!confirm("Are you sure you want to permanently terminate this virtual card? Future payments to this card will be blocked.")) return;
+    try {
+      const res = await fetch(`/api/cards/${cardId}/terminate`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.ok) {
+        await fetchCards();
+      } else {
+        const errData = await res.json();
+        alert(errData.error || "Failed to terminate card.");
+      }
+    } catch (err) {
+      console.error("Error terminating card:", err);
+    }
+  };
+
+  const handleLinkCard = async (subId: number, cardId: number | null) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/subscriptions/${subId}/link-card`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ cardId })
+      });
+      if (res.ok) {
+        await fetchSubscriptions();
+        setLinkingSubId(null);
+      } else {
+        const errData = await res.json();
+        alert(errData.error || "Failed to link card.");
+      }
+    } catch (err) {
+      console.error("Error linking card:", err);
+    }
+  };
+
+  const handleSimulateCharge = async (cardId: number) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/cards/${cardId}/simulate-charge`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          merchant: simMerchant || undefined,
+          amount: simAmount ? parseFloat(simAmount) : undefined
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSimResult(data.transaction);
+        setSimMerchant("");
+        setSimAmount("");
+        await fetchCards();
+        await fetchSubscriptions();
+      } else {
+        const errData = await res.json();
+        alert(errData.error || "Simulation failed.");
+      }
+    } catch (err) {
+      console.error("Simulation error:", err);
+    }
+  };
 
   // Handle Stripe upgrade checkout redirect
   const handleUpgrade = async () => {
@@ -624,6 +784,269 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
         </div>
       )}
 
+      {/* ==================== VIRTUAL SECURITY CARDS DASHBOARD ==================== */}
+      <div className="bg-white border border-slate-200/80 rounded-xl p-6 shadow-sm space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-slate-950 text-amber-500 flex items-center justify-center font-bold shadow-sm">
+              <CreditCard className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-slate-950">SubGuardian Virtual Security Cards</h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Generate single-merchant card tokens to secure your recurring payments and freeze leaks in 1 click.
+              </p>
+            </div>
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[10px] bg-amber-500/10 text-amber-800 border border-amber-500/20 px-2.5 py-1 rounded-full font-bold flex items-center gap-1.5 uppercase tracking-wide">
+              <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse"></span> Sandbox Active
+            </span>
+            <button
+              onClick={() => handleCreateCard("Visa", "USD")}
+              className="bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs px-4 py-2 rounded-lg shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" /> Create Security Card
+            </button>
+          </div>
+        </div>
+
+        {/* Informational Guidelines to prevent deceptive marketing */}
+        <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-4 text-xs text-slate-600 leading-relaxed flex items-start gap-3">
+          <Shield className="w-4.5 h-4.5 text-slate-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-semibold text-slate-800 mb-0.5">Legitimate Card Issuing Architecture</p>
+            This dashboard simulates integration with high-tier card processors (e.g. Stripe Issuing, Lithic, or Railsr). Freezing or terminating cards here securely restricts the payment gateway directly, guaranteeing that future merchant renewal charges get declined immediately. Note that blocking charges is distinct from cancelling merchant agreements.
+          </div>
+        </div>
+
+        {cards.length === 0 ? (
+          <div className="border border-dashed border-slate-200 rounded-xl py-10 px-4 text-center">
+            <CreditCard className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+            <h4 className="text-sm font-semibold text-slate-700">No Virtual Cards Generated Yet</h4>
+            <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+              Create your first secure virtual payment card to begin routing your streaming, gym, or SaaS subscriptions safely.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {cards.map((card) => {
+              const isActive = card.status === "active";
+              const isFrozen = card.status === "frozen";
+              const isTerminated = card.status === "terminated";
+              
+              // Find linked subscriptions
+              const linked = subs.filter(s => s.virtualCardId === card.id);
+
+              return (
+                <div key={card.id} className={`border rounded-xl p-5 space-y-4 flex flex-col justify-between transition-all ${
+                  isTerminated ? "border-slate-100 bg-slate-50/50 opacity-60" :
+                  isFrozen ? "border-amber-200 bg-amber-50/10" : "border-slate-200 hover:border-slate-300 bg-white"
+                }`}>
+                  
+                  {/* Visual Card Face */}
+                  <div className={`rounded-xl p-4 relative overflow-hidden text-white shadow-sm flex flex-col justify-between h-32 ${
+                    isTerminated ? "bg-gradient-to-br from-slate-400 to-slate-500" :
+                    isFrozen ? "bg-gradient-to-br from-slate-700 to-slate-800" : "bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900"
+                  }`}>
+                    {/* Background circles */}
+                    <div className="absolute -right-6 -bottom-6 w-24 h-24 bg-white/5 rounded-full blur-xl pointer-events-none"></div>
+                    
+                    <div className="flex items-center justify-between z-10">
+                      <div className="flex items-center gap-1.5">
+                        <Lock className="w-3.5 h-3.5 text-slate-300" />
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-300">Single Use</span>
+                      </div>
+                      <span className="text-xs font-black italic tracking-tight">{card.brand}</span>
+                    </div>
+
+                    <div className="font-mono text-base font-bold tracking-[0.25em] z-10 text-slate-100">
+                      ••••  ••••  ••••  {card.last4}
+                    </div>
+
+                    <div className="flex items-center justify-between z-10">
+                      <div>
+                        <div className="text-[8px] text-slate-400 uppercase tracking-widest font-semibold">Status</div>
+                        <div className="flex items-center gap-1 text-[10px] font-bold">
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            isActive ? "bg-emerald-400" :
+                            isFrozen ? "bg-amber-400 animate-pulse" : "bg-rose-400"
+                          }`}></span>
+                          <span className="capitalize">{card.status}</span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[8px] text-slate-400 uppercase tracking-widest font-semibold">Limit</div>
+                        <div className="text-[10px] font-black text-slate-200">No Limit</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Association Status */}
+                  <div className="space-y-1">
+                    <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Associated Subscriptions</div>
+                    {linked.length === 0 ? (
+                      <div className="text-xs text-slate-500 italic">No associated subscriptions</div>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5 pt-0.5">
+                        {linked.map(s => (
+                          <span key={s.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 border border-slate-200/50 text-slate-800">
+                            {s.name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions Bar */}
+                  <div className="pt-2 border-t border-slate-100 flex flex-wrap gap-1.5 justify-between items-center">
+                    <div className="flex gap-1">
+                      {isActive && (
+                        <button
+                          onClick={() => handleFreezeCard(card.id)}
+                          className="bg-amber-50 hover:bg-amber-100/80 border border-amber-200/50 text-amber-800 text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer"
+                        >
+                          Freeze
+                        </button>
+                      )}
+                      {isFrozen && (
+                        <button
+                          onClick={() => handleUnfreezeCard(card.id)}
+                          className="bg-emerald-50 hover:bg-emerald-100/80 border border-emerald-200/50 text-emerald-800 text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer"
+                        >
+                          Unfreeze
+                        </button>
+                      )}
+                      {!isTerminated && (
+                        <button
+                          onClick={() => handleTerminateCard(card.id)}
+                          className="bg-rose-50 hover:bg-rose-100/80 border border-rose-200/50 text-rose-800 text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer"
+                        >
+                          Terminate
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Simulation charge launcher */}
+                    {!isTerminated && (
+                      <button
+                        onClick={() => {
+                          setSimulatingCardId(card.id);
+                          setSimResult(null);
+                        }}
+                        className="text-[10px] font-bold text-blue-600 hover:text-blue-800 flex items-center gap-0.5 transition-colors cursor-pointer"
+                      >
+                        Simulate Charge
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Simulated Transaction Dialog Modal */}
+      <AnimatePresence>
+        {simulatingCardId !== null && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white border border-slate-200 rounded-xl p-6 shadow-xl max-w-md w-full space-y-4"
+            >
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="w-5 h-5 text-blue-500" />
+                  <h4 className="text-sm font-bold text-slate-900">Simulate Payment Webhook</h4>
+                </div>
+                <button 
+                  onClick={() => {
+                    setSimulatingCardId(null);
+                    setSimResult(null);
+                  }}
+                  className="text-slate-400 hover:text-slate-600 font-bold"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Fire a simulated charge statement to verify gateway rules. Frozen/terminated cards will decline instantly with logged reasons.
+              </p>
+
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] text-slate-400 font-bold uppercase">Merchant Name</label>
+                  <input
+                    type="text"
+                    placeholder="E.g., Netflix"
+                    value={simMerchant}
+                    onChange={(e) => setSimMerchant(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-800"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] text-slate-400 font-bold uppercase">Amount</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="E.g., 14.99"
+                    value={simAmount}
+                    onChange={(e) => setSimAmount(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs text-slate-800"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-2 flex justify-end gap-2">
+                <button
+                  onClick={() => {
+                    setSimulatingCardId(null);
+                    setSimResult(null);
+                  }}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold px-4 py-2 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleSimulateCharge(simulatingCardId)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold px-4 py-2 rounded-lg"
+                >
+                  Send Simulated Charge
+                </button>
+              </div>
+
+              {simResult && (
+                <div className={`mt-4 rounded-lg p-4 border text-xs leading-relaxed space-y-1.5 ${
+                  simResult.status === "approved" 
+                    ? "bg-emerald-50 border-emerald-200 text-emerald-800" 
+                    : "bg-rose-50 border-rose-200 text-rose-800"
+                }`}>
+                  <div className="flex items-center gap-1.5 font-bold">
+                    {simResult.status === "approved" ? <CheckCircle2 className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+                    Gateway Decision: {simResult.status === "approved" ? "APPROVED" : "DECLINED"}
+                  </div>
+                  <div><span className="font-semibold">Transaction ID:</span> {simResult.externalTransactionId}</div>
+                  <div><span className="font-semibold">Amount:</span> {simResult.amount} {simResult.currency}</div>
+                  {simResult.declineReason && (
+                    <div><span className="font-semibold">Decline Reason:</span> {simResult.declineReason}</div>
+                  )}
+                  {simResult.status === "approved" && (
+                    <div className="text-[10px] opacity-90 mt-1">
+                      ✓ Linked subscription ledger updated with the latest billing timestamp.
+                    </div>
+                  )}
+                </div>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Main grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         
@@ -891,6 +1314,62 @@ POS DEBIT ADOBE SYSTEMS INC CREATIVE CLD - $54.99 (08/15)`
                           Category: <span className="capitalize text-slate-500 font-semibold">{sub.category}</span>
                           {sub.lastTransactionDate && ` • Last Transaction: ${sub.lastTransactionDate}`}
                         </p>
+
+                        {/* Virtual Card association indicator & linker */}
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          {sub.virtualCardId ? (() => {
+                            const linkedCard = cards.find(c => c.id === sub.virtualCardId);
+                            return (
+                              <div className="flex items-center gap-1.5">
+                                <span className="inline-flex items-center gap-1 text-[9px] font-bold bg-slate-900 text-slate-100 px-2 py-0.5 rounded-md border border-slate-800 leading-none">
+                                  <Lock className="w-2.5 h-2.5 text-amber-500" /> Card: •••• {linkedCard ? linkedCard.last4 : "Deleted"}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleLinkCard(sub.id, null)}
+                                  className="text-[9px] font-bold text-rose-500 hover:text-rose-700 cursor-pointer"
+                                >
+                                  Unlink
+                                </button>
+                              </div>
+                            );
+                          })() : (
+                            <button
+                              type="button"
+                              onClick={() => setLinkingSubId(sub.id)}
+                              className="text-[10px] font-bold text-blue-600 hover:text-blue-800 flex items-center gap-0.5 cursor-pointer leading-none"
+                            >
+                              <Plus className="w-3 h-3" /> Connect Security Card
+                            </button>
+                          )}
+
+                          {linkingSubId === sub.id && (
+                            <div className="flex items-center gap-1.5 animate-fade-in bg-slate-50 p-1 border border-slate-200 rounded-lg">
+                              <select
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val) {
+                                    handleLinkCard(sub.id, parseInt(val));
+                                  }
+                                }}
+                                defaultValue=""
+                                className="text-[10px] bg-white border border-slate-200 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+                              >
+                                <option value="" disabled>Select card...</option>
+                                {cards.filter(c => c.status !== "terminated").map(c => (
+                                  <option key={c.id} value={c.id}>•••• {c.last4} ({c.brand})</option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => setLinkingSubId(null)}
+                                className="text-[10px] font-bold text-slate-500 cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
 

@@ -47,6 +47,7 @@ export interface SubscriptionItem {
   status: "active" | "flagged" | "cancellation_requested" | "awaiting_confirmation" | "cancelled" | "verified_cancelled";
   potentialSavings: number;
   confirmedSavings: number;
+  virtualCardId?: number | null;
   createdAt?: string;
   updatedAt?: string;
   
@@ -80,3 +81,17 @@ export interface PredefinedIdea {
   prompt: string;
   icon: string;
 }
+
+export interface VirtualCard {
+  id: number;
+  userId: number;
+  providerId: string;
+  externalCardId: string;
+  status: "pending" | "active" | "frozen" | "terminated" | "failed";
+  last4: string;
+  brand: string;
+  currency: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+

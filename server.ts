@@ -4,13 +4,14 @@ import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import Stripe from "stripe";
 import { db } from "./src/db/index.ts";
-import { users, subscriptions, transactions, cancellationRequests, savingsEvents, renewalReminders } from "./src/db/schema.ts";
-import { eq, and } from "drizzle-orm";
+import { users, subscriptions, transactions, cancellationRequests, savingsEvents, renewalReminders, virtualCards, cardTransactions } from "./src/db/schema.ts";
+import { eq, and, desc } from "drizzle-orm";
 import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { calculateNextRenewal } from "./src/lib/renewal.ts";
 import { NotificationService } from "./src/lib/notifications.ts";
 import { getProvider } from "./src/lib/providers.ts";
 import { CancellationService } from "./src/lib/cancellationService.ts";
+import { getCardProvider, isRealCardProviderConfigured, verifyWebhookSignature } from "./src/lib/cardProvider.ts";
 
 dotenv.config();
 
@@ -664,7 +665,19 @@ app.post("/api/subscriptions/:id/confirm-provider-accepted", requireAuth, async 
         eq(cancellationRequests.userId, req.dbUser.id)
       ));
 
-    res.json({ success: true, status: "cancelled" });
+    // Phase 7: Handle conditional card freezing/termination if enabled & appropriate
+    let cardActionMessage = "";
+    if (sub.virtualCardId && req.body.freezeCard) {
+      const [card] = await db.select()
+        .from(virtualCards)
+        .where(and(eq(virtualCards.id, sub.virtualCardId), eq(virtualCards.userId, req.dbUser.id)));
+      if (card && card.status === "active") {
+        await getCardProvider().freezeCard(req.dbUser.id, card.externalCardId);
+        cardActionMessage = "Associated virtual card has been frozen successfully.";
+      }
+    }
+
+    res.json({ success: true, status: "cancelled", cardActionMessage });
   } catch (error: any) {
     console.error("Provider confirmation failed:", error);
     res.status(500).json({ error: error.message || "Unable to confirm cancellation." });
@@ -807,6 +820,290 @@ User name: ${req.dbUser.name || "Customer"}`;
   } catch (error: any) {
     console.error("Negotiation script failed:", error);
     res.status(500).json({ error: error.message || "An error occurred." });
+  }
+});
+
+// ==================== VIRTUAL CARD ENDPOINTS ====================
+
+// GET /api/cards - List cards
+app.get("/api/cards", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const userCards = await db.select()
+      .from(virtualCards)
+      .where(eq(virtualCards.userId, req.dbUser.id))
+      .orderBy(desc(virtualCards.id));
+    res.json({ cards: userCards });
+  } catch (err: any) {
+    console.error("Failed to fetch cards:", err);
+    res.status(500).json({ error: "Failed to fetch virtual cards." });
+  }
+});
+
+// POST /api/cards - Create a card
+app.post("/api/cards", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const { brand, currency } = req.body;
+    const card = await getCardProvider().createCard(req.dbUser.id, { brand, currency });
+    res.json({ success: true, card });
+  } catch (err: any) {
+    console.error("Failed to create card:", err);
+    res.status(500).json({ error: err.message || "Failed to create virtual card." });
+  }
+});
+
+// POST /api/cards/:id/freeze - Freeze a card
+app.post("/api/cards/:id/freeze", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const cardId = parseInt(req.params.id);
+    const [card] = await db.select()
+      .from(virtualCards)
+      .where(and(eq(virtualCards.id, cardId), eq(virtualCards.userId, req.dbUser.id)));
+    if (!card) return res.status(404).json({ error: "Card not found." });
+    if (card.status === "terminated") return res.status(400).json({ error: "Terminated cards cannot be frozen." });
+
+    const updated = await getCardProvider().freezeCard(req.dbUser.id, card.externalCardId);
+    res.json({ success: true, card: updated });
+  } catch (err: any) {
+    console.error("Failed to freeze card:", err);
+    res.status(500).json({ error: err.message || "Failed to freeze virtual card." });
+  }
+});
+
+// POST /api/cards/:id/unfreeze - Unfreeze a card
+app.post("/api/cards/:id/unfreeze", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const cardId = parseInt(req.params.id);
+    const [card] = await db.select()
+      .from(virtualCards)
+      .where(and(eq(virtualCards.id, cardId), eq(virtualCards.userId, req.dbUser.id)));
+    if (!card) return res.status(404).json({ error: "Card not found." });
+    if (card.status === "terminated") return res.status(400).json({ error: "Terminated cards cannot be unfrozen." });
+
+    const updated = await getCardProvider().unfreezeCard(req.dbUser.id, card.externalCardId);
+    res.json({ success: true, card: updated });
+  } catch (err: any) {
+    console.error("Failed to unfreeze card:", err);
+    res.status(500).json({ error: err.message || "Failed to unfreeze virtual card." });
+  }
+});
+
+// POST /api/cards/:id/terminate - Terminate a card
+app.post("/api/cards/:id/terminate", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const cardId = parseInt(req.params.id);
+    const [card] = await db.select()
+      .from(virtualCards)
+      .where(and(eq(virtualCards.id, cardId), eq(virtualCards.userId, req.dbUser.id)));
+    if (!card) return res.status(404).json({ error: "Card not found." });
+
+    const updated = await getCardProvider().terminateCard(req.dbUser.id, card.externalCardId);
+    res.json({ success: true, card: updated });
+  } catch (err: any) {
+    console.error("Failed to terminate card:", err);
+    res.status(500).json({ error: err.message || "Failed to terminate virtual card." });
+  }
+});
+
+// POST /api/subscriptions/:id/link-card - Link a card
+app.post("/api/subscriptions/:id/link-card", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const subId = parseInt(req.params.id);
+    const { cardId } = req.body; // number | null
+
+    const [sub] = await db.select()
+      .from(subscriptions)
+      .where(and(eq(subscriptions.id, subId), eq(subscriptions.userId, req.dbUser.id)));
+    if (!sub) return res.status(404).json({ error: "Subscription not found." });
+
+    if (cardId) {
+      const [card] = await db.select()
+        .from(virtualCards)
+        .where(and(eq(virtualCards.id, cardId), eq(virtualCards.userId, req.dbUser.id)));
+      if (!card) return res.status(404).json({ error: "Card not found or access denied." });
+    }
+
+    await db.update(subscriptions)
+      .set({ virtualCardId: cardId })
+      .where(eq(subscriptions.id, subId));
+
+    res.json({ success: true, virtualCardId: cardId });
+  } catch (err: any) {
+    console.error("Failed to link card:", err);
+    res.status(500).json({ error: err.message || "Failed to link card." });
+  }
+});
+
+// POST /api/webhooks/cards - Secure transaction webhooks
+app.post("/api/webhooks/cards", async (req, res) => {
+  try {
+    // Webhook Signature verification
+    const signature = req.headers["x-subguardian-signature"] as string;
+    const webhookSecret = process.env.CARD_PROVIDER_WEBHOOK_SECRET || "sb_secret";
+    const rawBody = JSON.stringify(req.body);
+
+    if (!verifyWebhookSignature(rawBody, signature, webhookSecret)) {
+      return res.status(401).json({ error: "Invalid webhook signature." });
+    }
+
+    const { externalCardId, externalTransactionId, amount, currency, merchant } = req.body;
+
+    if (!externalCardId || !externalTransactionId || amount === undefined || !currency || !merchant) {
+      return res.status(400).json({ error: "Missing required webhook parameters." });
+    }
+
+    // Idempotency check: duplicate transaction protection
+    const [existingTx] = await db.select()
+      .from(cardTransactions)
+      .where(eq(cardTransactions.externalTransactionId, externalTransactionId));
+
+    if (existingTx) {
+      return res.json({ success: true, message: "Duplicate transaction skipped.", transaction: existingTx });
+    }
+
+    // Find card
+    const [card] = await db.select()
+      .from(virtualCards)
+      .where(eq(virtualCards.externalCardId, externalCardId));
+
+    if (!card) {
+      return res.status(404).json({ error: "Virtual card not found." });
+    }
+
+    let status: "approved" | "declined" = "approved";
+    let declineReason: string | null = null;
+
+    if (card.status === "frozen") {
+      status = "declined";
+      declineReason = "Card is frozen.";
+    } else if (card.status === "terminated") {
+      status = "declined";
+      declineReason = "Card is terminated.";
+    }
+
+    // Record transaction
+    const [newTx] = await db.insert(cardTransactions)
+      .values({
+        userId: card.userId,
+        virtualCardId: card.id,
+        externalTransactionId,
+        amount: parseFloat(amount),
+        currency,
+        status,
+        merchant,
+        declineReason,
+      })
+      .returning();
+
+    // If transaction is approved, find linked subscription to record charge history & lastTransactionDate
+    if (status === "approved") {
+      const linkedSubs = await db.select()
+        .from(subscriptions)
+        .where(and(eq(subscriptions.virtualCardId, card.id), eq(subscriptions.userId, card.userId)));
+
+      for (const sub of linkedSubs) {
+        // Log transaction inside general user statements
+        await db.insert(transactions)
+          .values({
+            userId: card.userId,
+            merchant,
+            amount: parseFloat(amount),
+            currency,
+            transactionDate: new Date().toISOString().split('T')[0],
+            description: `Auto-logged from Virtual Card (•••• ${card.last4})`,
+            recurring: true,
+          });
+
+        // Update subscription last transaction date
+        await db.update(subscriptions)
+          .set({
+            lastTransactionDate: new Date().toISOString().split('T')[0],
+            updatedAt: new Date(),
+          })
+          .where(eq(subscriptions.id, sub.id));
+      }
+    }
+
+    res.json({ success: true, transactionId: newTx.id, status });
+  } catch (err: any) {
+    console.error("Webhook processing failed:", err);
+    res.status(500).json({ error: "Webhook processing failed." });
+  }
+});
+
+// POST /api/cards/:id/simulate-charge - Simulate a transaction (Sandbox webhooks demo)
+app.post("/api/cards/:id/simulate-charge", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (!req.dbUser) return res.status(401).json({ error: "Unauthorized" });
+    const cardId = parseInt(req.params.id);
+    const { amount, merchant } = req.body;
+
+    const [card] = await db.select()
+      .from(virtualCards)
+      .where(and(eq(virtualCards.id, cardId), eq(virtualCards.userId, req.dbUser.id)));
+    if (!card) return res.status(404).json({ error: "Card not found." });
+
+    const externalTransactionId = "tx_sim_" + Math.random().toString(36).substring(2, 11);
+    
+    let status: "approved" | "declined" = "approved";
+    let declineReason: string | null = null;
+
+    if (card.status === "frozen") {
+      status = "declined";
+      declineReason = "Card is frozen.";
+    } else if (card.status === "terminated") {
+      status = "declined";
+      declineReason = "Card is terminated.";
+    }
+
+    const [newTx] = await db.insert(cardTransactions)
+      .values({
+        userId: card.userId,
+        virtualCardId: card.id,
+        externalTransactionId,
+        amount: parseFloat(amount || 14.99),
+        currency: card.currency,
+        status,
+        merchant: merchant || "Netflix",
+        declineReason,
+      })
+      .returning();
+
+    if (status === "approved") {
+      const linkedSubs = await db.select()
+        .from(subscriptions)
+        .where(and(eq(subscriptions.virtualCardId, card.id), eq(subscriptions.userId, card.userId)));
+
+      for (const sub of linkedSubs) {
+        await db.insert(transactions)
+          .values({
+            userId: card.userId,
+            merchant: merchant || "Netflix",
+            amount: parseFloat(amount || 14.99),
+            currency: card.currency,
+            transactionDate: new Date().toISOString().split('T')[0],
+            description: `Simulated Charge on Virtual Card (•••• ${card.last4})`,
+            recurring: true,
+          });
+
+        await db.update(subscriptions)
+          .set({
+            lastTransactionDate: new Date().toISOString().split('T')[0],
+            updatedAt: new Date(),
+          })
+          .where(eq(subscriptions.id, sub.id));
+      }
+    }
+
+    res.json({ success: true, transaction: newTx });
+  } catch (err: any) {
+    console.error("Simulation failed:", err);
+    res.status(500).json({ error: err.message || "Failed to simulate transaction." });
   }
 });
 
