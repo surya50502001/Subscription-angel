@@ -42,7 +42,7 @@ Thank you,
 ${userName || "Valued Customer"}`;
   }
 
-  const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash"];
+  const modelsToTry = ["gemini-3.7-flash"];
   for (const model of modelsToTry) {
     try {
       const response = await ai.models.generateContent({

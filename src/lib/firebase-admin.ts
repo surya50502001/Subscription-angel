@@ -6,7 +6,7 @@ let adminApp: App;
 
 if (!getApps().length) {
   adminApp = initializeApp({
-    projectId: "dummy",
+    projectId: "hopeful-amplifier-xf6jr",
   });
 } else {
   adminApp = getApps()[0];

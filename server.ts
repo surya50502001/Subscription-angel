@@ -81,7 +81,7 @@ async function generateContentWithFallback(config: {
 }) {
   if (!ai) throw new Error("Google Gen AI client is not initialized.");
 
-  const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash"];
+  const modelsToTry = ["gemini-3.7-flash"];
   let lastError: any = null;
 
   for (const model of modelsToTry) {
